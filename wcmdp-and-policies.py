@@ -66,6 +66,35 @@ class WCMDP(object):
         for s in self.sspa:
             s_fracs[s] = s_counts[s] / self.N
         return s_fracs
+    
+    def reassign_ids(self, costs_per_arm, eps, d):
+        """
+        :param costs_per_arm: the costs of each arm, in the shape of N x K
+        :param eps: the threshold for the cost of each interval
+        :param d: the length of the interval
+        :return: the new assignment of the arms, in the shape of N
+        """
+        intervals = self.N // d
+        new_ids = np.full((self.N,),-1)
+        used_ids = np.zeros((self.N,))
+        K = costs_per_arm.shape[1] if len(costs_per_arm.shape) > 1 else 1
+        for i in range(intervals):
+            cur_id = i * d
+            for k in range(K):
+                cur_cost_k = sum(costs_per_arm[j, k] for j in range(self.N) if i * d <= new_ids[j] < (i + 1) * d)
+                if cur_cost_k < eps:
+                    for j in range(self.N):
+                        if not used_ids[j] and costs_per_arm[j, k] >= eps:
+                            new_ids[j] = cur_id
+                            cur_id += 1
+                            used_ids[j] = 1
+        unused_ids = set(range(self.N)) - set(new_ids)
+        for j in range(self.N):
+            if new_ids[j] == -1:
+                new_ids[j] = unused_ids.pop()
+                used_ids[j] = 1 # mark it as used
+        return new_ids
+
 
 
 class SingleArmAnalyzer(object):
@@ -117,7 +146,7 @@ class SingleArmAnalyzer(object):
         for k in range(self.K):
             cost_tensor = self.cost_tensor_list[k]
             alpha = self.alpha_list[k]
-            budget_constrs.append(cp.sum(cp.multiply(self.y, cost_tensor)) == alpha*self.N)
+            budget_constrs.append(cp.sum(cp.multiply(self.y, cost_tensor)) == alpha*self.N)  
         return budget_constrs
 
     def get_basic_constraints(self):
@@ -214,4 +243,7 @@ class IDPolicy(object):
         :return: the actions taken by the arms under the policy
         """
         pass
+
+
+
 
