@@ -65,7 +65,7 @@ class SingleArmAnalyzer(object):
         for k in range(self.K):
             cost_tensor = self.cost_tensor_list[k]
             alpha = self.alpha_list[k]
-            budget_constrs.append(cp.sum(cp.multiply(self.y, cost_tensor)) == alpha*self.N)  
+            budget_constrs.append(cp.sum(cp.multiply(self.y, cost_tensor)) < alpha*self.N)  
         return budget_constrs
 
     def get_basic_constraints(self):
