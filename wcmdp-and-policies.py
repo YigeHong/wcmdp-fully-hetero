@@ -9,71 +9,16 @@ import numpy as np
 import cvxpy as cp
 import scipy
 import warnings
-
-class WCMDP(object):
-    """
-    :param trans_tensor: n-d vector with dims=(N, sspa_size, aspa_size, sspa_size) and dtype=float
-    note that the cost constraint is not encoded in this class
-    """
-    def __init__(self, sspa_size, aspa_size, N, trans_tensor, reward_tensor, init_states=None):
-        self.sspa_size = sspa_size
-        self.sspa = np.array(list(range(self.sspa_size)))
-        self.aspa_size = aspa_size
-        self.aspa = np.array(list(range(self.aspa_size)))
-        self.sa_pairs = []
-        for s in self.sspa:
-            for a in self.aspa:
-                self.sa_pairs = self.sa_pairs.append((s, a))
-        self.N = N
-        self.trans_tensor = trans_tensor
-        self.reward_tensor = reward_tensor
-        # initialize the state of the arms at 0
-        if init_states is not None:
-            self.states = init_states.copy()
-        else:
-            self.states = np.zeros((self.N,))
-
-    def get_states(self):
-        return self.states.copy()
-
-    def step(self, actions):
-        """
-        :param actions: a 1-d array with length N. Each entry is an int in the range [0,self.aspa-1], denoting the action of each arm
-        :return: intantaneous reward of this time step
-        """
-        instant_reward = 0
-        for i in range(self.N):
-            cur_s = self.states[i]
-            cur_a = actions[i]
-            instant_reward += self.reward_tensor[i, cur_s, cur_a]
-            self.states[i] = np.random.choice(self.sspa, 1, p=self.trans_tensor[i, cur_s, cur_a:])
-        instant_reward = instant_reward / self.N  # we normalize it by the number of arms
-        return instant_reward
-
-    def check_budget_constraints(self):
-        pass
-
-    def get_s_counts(self):
-        s_counts = np.zeros((self.sspa_size,))
-        # find out the arms whose (state, action) = sa_pair
-        for s in self.sspa:
-            s_counts[s] = len(np.where([self.states == s])[0])
-        return s_counts
-
-    def get_s_fracs(self):
-        s_counts = self.get_s_counts()
-        s_fracs = np.zeros((self.sspa_size,))
-        for s in self.sspa:
-            s_fracs[s] = s_counts[s] / self.N
-        return s_fracs
+import functools
+import operator
 
 
 class SingleArmAnalyzer(object):
     def __init__(self, sspa_size, aspa_size, N, trans_tensor, reward_tensor, K, cost_tensor_list, alpha_list):
         self.sspa_size = sspa_size
-        self.sspa = np.array(list(range(self.sspa_size)))
+        self.sspa = np.array(list(range(self.sspa_size)), dtype=np.int64)
         self.aspa_size = aspa_size
-        self.aspa = np.array(list(range(self.aspa_size)))
+        self.aspa = np.array(list(range(self.aspa_size)), dtype=np.int64)
         self.sa_pairs = []
         for s in self.sspa:
             for a in self.aspa:
@@ -84,9 +29,12 @@ class SingleArmAnalyzer(object):
         self.K = K
         self.cost_tensor_list = cost_tensor_list
         self.alpha_list = alpha_list
-
         # any numbers smaller than self.EPS are regard as zero
         self.EPS = 1e-8
+
+        # two parameters used in reassignment
+        self.cmax = np.max(np.array(self.cost_tensor_list))
+        self.alphamin = np.min(np.array(alpha_list))
 
         # variables
         self.y = cp.Variable((N, self.sspa_size, self.aspa_size))
@@ -174,13 +122,179 @@ class SingleArmAnalyzer(object):
         print("Single armed policy=", self.policies[arm_id,:,:])
         print("---------------------------")
 
+    def reassign_ID(self, method):
+        """
+        run this method after solving the LP
+        :method: "random" or "intervals"
+        :return: new_orders, which is a permuted list of 0,1,...,N-1. The new_orders[i] indicates old id of the arm whose new ID=i
+        """
+        if method == "random":
+            return np.random.permutation(self.N)
+        elif method == "intervals":
+            exp_cost_table = np.zeros((self.K, self.N,))
+            for k in range(self.K):
+                for i in range(self.N):
+                    exp_cost_table[k,i] = np.dot(np.flatten(self.cost_tensor_list[k][i,:,:]), np.flatten(self.y.value[i,:,:]))
+            active_constrs = np.sum(exp_cost_table, axis=1) >= (0.5*np.array(self.alpha_list)*self.N)
+
+
+            ec = cp.Variable((1,))
+            dc = cp.Variable((1,))
+            constr = [dc >= self.K * (self.cmax - ec) / (self.alphamin/2-ec)] ### todo: quadratic program, may need a suitable optimizer or reformulate
+            obj = cp.Maximize(ec / dc)
+            prb = cp.Problem(obj, constr)
+            prb.solve(verbose=False)
+
+            cost_tresh = ec.value
+
+            rem_costly_arms_table = exp_cost_table >= cost_tresh
+            non_costly_arms_list = list(np.where(np.multiply(rem_costly_arms_table, axis=0) == 0)[0])
+            points_to_next_costly = np.zeros((self.K,), dtype=np.int64) # pointers to the smallest-index arm whose type-k cost is larger than the threshold
+            for k in range(self.K):
+                if active_constrs[k] == 1:
+                    type_k_costly = np.where(rem_costly_arms_table[k,:]>0)[0]
+                    # type_k_costly must be non-empty if the k-th budget contraint is active
+                    points_to_next_costly[k] = np.min(type_k_costly) #if len(type_k_costly) > 0 else self.N
+                else:
+                    points_to_next_costly[k] = self.N
+            costly_groups = [[]] # groups of arms; the total type-k cost of each group will be larger than cost_thresh, for each k
+            rem_arms_list = []
+            while True:
+                # each outer loop creates a group of costly arms
+                costly_groups.append([])
+                fulfilled_costs = np.zeros((self.K,))
+                for k in range(self.K):
+                    if fulfilled_costs[k] == 0:
+                        # find the next arm to add
+                        arm_to_add = points_to_next_costly[k]
+                        if arm_to_add >= self.N:
+                            continue
+                        assert rem_costly_arms_table[k,arm_to_add] > 0 # temporary, check correctness of the code
+                        # add the arm, update tables
+                        costly_groups[-1].append(arm_to_add)
+                        fulfilled_costs += rem_costly_arms_table[:,arm_to_add]
+                        rem_costly_arms_table[:,arm_to_add] = 0
+                        # for each cost type k, find the next costly arm that hasn't been added into the groups
+                        for _k in range(self.K):
+                            new_pointer = points_to_next_costly[_k]
+                            while (new_pointer < self.N) and rem_costly_arms_table[new_pointer] == 0:
+                                points_to_next_costly[_k] += 1
+                            points_to_next_costly[_k] = new_pointer
+                    else:
+                        continue
+                if np.any((points_to_next_costly >= self.N) * active_constrs):
+                    if np.any((fulfilled_costs == 0) * active_constrs):
+                        # if the cost of last group is not fulfilled, remove from the groups, and add them into the remaining arms
+                        unfulfilled_group = costly_groups.pop()
+                        rem_arms_list.extend(unfulfilled_group)
+                    # merge the costly arms that are not added into the groups into non_costly_arms_list
+                    rem_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0)>0)[0])
+                    rem_arms_list.extend(rem_costly_arms_list)
+                    rem_arms_list.extend(non_costly_arms_list)
+                    break
+
+            # calculate the total number of intervals of each length
+            intv_len_1 = np.ceil(dc.value)
+            num_intvs = np.floor(self.N / intv_len_1)
+            intv_len_2 = intv_len_1 - 1
+            num_len_1_intv = self.N - num_intvs * intv_len_2
+            assert num_len_1_intv * intv_len_1 + (num_intvs - num_len_1_intv) * intv_len_2 == self.N
+            # merge the extra groups into remaining arms
+            for group in costly_groups[num_intvs:]:
+                rem_arms_list.extend(group)
+            np.random.shuffle(rem_arms_list)
+            # combine the costly arm groups and the remaining arms into intervals of the lengths specified above
+            rem_arms_pt = 0
+            for ell in range(num_intvs):
+                num_exist = len(costly_groups[ell])
+                num_to_add = intv_len_1-num_exist if ell < num_len_1_intv else intv_len_2-num_exist
+                assert num_to_add >= 0
+                arms_to_add = rem_arms_list[rem_arms_pt:(rem_arms_pt+num_to_add)]
+                costly_groups[ell].extend(arms_to_add)
+                rem_arms_pt += num_to_add
+
+            new_orders = functools.reduce(operator.iconcat, costly_groups, [])
+            new_orders = np.array(new_orders)
+
+            assert np.allclose(np.sort(new_orders), np.arange(self.N, dtype=np.int64))
+            for k in range(self.K):
+                if active_constrs[k] == 1:
+                    temp_pt = 0
+                    for ell in range(num_intvs):
+                        intv_len = intv_len_1 if ell < num_len_1_intv else intv_len_2
+                        assert sum([exp_cost_table[k,i] for i in new_orders[ell:(ell+intv_len)]]) >= cost_tresh, \
+                            "{}-th interval violates type-{} cost-slope require requirement, involve arms {}".format(ell, k, new_orders[ell:(ell+intv_len)])
+                        temp_pt += intv_len
+
+            return new_orders
+        else:
+            raise NotImplementedError
+
+
+class WCMDP(object):
+    """
+    :param trans_tensor: n-d vector with dims=(N, sspa_size, aspa_size, sspa_size) and dtype=float
+    note that the cost constraint is not encoded in this class
+    """
+    def __init__(self, sspa_size, aspa_size, N, trans_tensor, reward_tensor, init_states=None):
+        self.sspa_size = sspa_size
+        self.sspa = np.array(list(range(self.sspa_size)), dtype=np.int64)
+        self.aspa_size = aspa_size
+        self.aspa = np.array(list(range(self.aspa_size)), dtype=np.int64)
+        self.sa_pairs = []
+        for s in self.sspa:
+            for a in self.aspa:
+                self.sa_pairs = self.sa_pairs.append((s, a))
+        self.N = N
+        self.trans_tensor = trans_tensor
+        self.reward_tensor = reward_tensor
+        # initialize the state of the arms at 0
+        if init_states is not None:
+            self.states = init_states.copy()
+        else:
+            self.states = np.zeros((self.N,))
+
+    def get_states(self):
+        return self.states.copy()
+
+    def step(self, actions):
+        """
+        :param actions: a 1-d array with length N. Each entry is an int in the range [0,self.aspa-1], denoting the action of each arm
+        :return: intantaneous reward of this time step
+        """
+        instant_reward = 0
+        for i in range(self.N):
+            cur_s = self.states[i]
+            cur_a = actions[i]
+            instant_reward += self.reward_tensor[i, cur_s, cur_a]
+            self.states[i] = np.random.choice(self.sspa, 1, p=self.trans_tensor[i, cur_s, cur_a:])
+        instant_reward = instant_reward / self.N  # we normalize it by the number of arms
+        return instant_reward
+
+    def check_budget_constraints(self):
+        pass
+
+    def get_s_counts(self):
+        s_counts = np.zeros((self.sspa_size,))
+        # find out the arms whose (state, action) = sa_pair
+        for s in self.sspa:
+            s_counts[s] = len(np.where([self.states == s])[0])
+        return s_counts
+
+    def get_s_fracs(self):
+        s_counts = self.get_s_counts()
+        s_fracs = np.zeros((self.sspa_size,))
+        for s in self.sspa:
+            s_fracs[s] = s_counts[s] / self.N
+        return s_fracs
+
 
 class IDPolicy(object):
     def __init__(self, sspa_size, aspa_size, N, policies, K, cost_tensor_list, alpha_list):
         self.sspa_size = sspa_size
-        self.sspa = np.array(list(range(self.sspa_size)))
+        self.sspa = np.array(list(range(self.sspa_size)), dtype=np.int64)
         self.aspa_size = aspa_size
-        self.aspa = np.array(list(range(self.aspa_size)))
+        self.aspa = np.array(list(range(self.aspa_size)), dtype=np.int64)
         self.sa_pairs = []
         for s in self.sspa:
             for a in self.aspa:
@@ -213,5 +327,24 @@ class IDPolicy(object):
         :param cur_states: the current states of the arms
         :return: the actions taken by the arms under the policy
         """
-        pass
+        actions = np.zeros((self.N,), dtype=np.int64)
+        for i in range(self.N):
+            actions[i] = np.random.choice(self.aspa, size=1, p=self.policies[i][cur_states[i]])
 
+        cost_partial_sum_table = np.zeros((self.K, self.N,))
+        for k in range(self.K):
+            for i in range(self.N):
+                if i == 0:
+                    cost_partial_sum_table[k,i] = self.cost_tensor_list[k][i, cur_states[i], actions[i]]
+                else:
+                    cost_partial_sum_table[k,i] = cost_partial_sum_table[k,i-1] + self.cost_tensor_list[k][i, cur_states[i], actions[i]]
+        budget_vec = self.N * np.array(self.alpha_list)
+        conform_table = cost_partial_sum_table < np.expand_dims(budget_vec, axis=1)
+        conform_arms = np.multiply(conform_table, axis=0)
+        N_star = np.min(np.where(conform_arms==0)) # i < N_star follow the single-armed policy
+        actions[N_star:] = 0
+
+        for k in range(self.K):
+            assert sum([self.cost_tensor_list[k][i, cur_states[i], actions[i]] for i in range(self.N)]) <= budget_vec[k], "{}-th cost exceeds budget"
+
+        return actions
