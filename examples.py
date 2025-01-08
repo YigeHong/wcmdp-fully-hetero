@@ -136,10 +136,10 @@ def clip_and_normalize(tensor, epsilon, axis):
 
 if __name__ == "__main__":
     np.random.seed(42)
-    sspa_size = 5
-    aspa_size = 3
-    max_N = 200
-    K = 3
+    sspa_size = 10
+    aspa_size = 4
+    max_N = 1000
+    K = 4
     for ell in range(1):
         example = RandomExampleFullyHet(sspa_size, aspa_size, max_N, K, "dirichlet", [1])
         save_path = "examples/uniform-S{}A{}N{}K{}fh-{}".format(sspa_size, aspa_size, max_N, K, ell)

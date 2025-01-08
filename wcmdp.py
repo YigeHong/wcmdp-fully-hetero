@@ -332,15 +332,6 @@ class IDPolicy(object):
         self.alpha_list = alpha_list
         self.EPS = 1e-8
 
-        # # compute the single-armed policies from the solution y
-        # self.state_probs = np.sum(self.y, axis=2)
-        # self.policies = np.zeros((self.N, self.sspa_size, self.aspa_size))
-        # for i in range(self.N):
-        #     for s in self.sspa:
-        #         if self.state_probs[i, s] > self.EPS:
-        #             self.policies[i, s, :] = y[i, s, :] / self.state_probs[i, s]
-        #         else:
-        #             self.policies[i, s, :] = 1 / self.aspa_size
         if not np.allclose(np.sum(self.policies, axis=2), np.ones((self.N, self.sspa_size)), atol=1e-4):
             print("policy definition wrong, the action probs do not sum up to 1. The wrong arms and policies are")
             for i in range(self.N):

@@ -7,7 +7,6 @@ import examples
 from examples import RandomExampleFullyHet
 import time
 import pickle
-from matplotlib import pyplot as plt
 import os
 import multiprocessing as mp
 import bisect
@@ -130,10 +129,6 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                             t, recent_total_reward/save_mean_every/opt_value, recent_total_Nstar/save_mean_every/N))
                         recent_total_reward = 0
                         recent_total_Nstar = 0
-                    # if t%100 == 0:
-                    #     sa_fracs = sa_list_to_freq(setting.sspa_size, cur_states, actions)
-                    #     s_fracs = np.sum(sa_fracs, axis=1)
-                    #     print("t={}\ns_fracs={}".format(t, s_fracs))
             else:
                 raise NotImplementedError
             avg_reward = total_reward / T
@@ -141,6 +136,7 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
             print("setting={}, policy={}, N={}, rep_id={}, avg_reward/upper_bound={}, total gap={}, note={}".format(
                 setting_name, policy_name, N, rep, avg_reward/opt_value, N*(opt_value-avg_reward), note))
 
+            # save the data
             if not debug:
                 if os.path.exists(data_file_name):
                     # write the data in place; overwrite those traces with the same (rep, N)
@@ -172,8 +168,8 @@ if __name__ == "__main__":
         os.mkdir("examples")
     if not os.path.exists("fig_data"):
         os.mkdir("fig_data")
-    random_example_name = "uniform-S5A3N200K3fh-0"
-    Ns = list(range(20, 220, 20))
-    T = 10000
+    random_example_name = "uniform-S10A4N1000K4fh-0" #"uniform-S10A4N1000K3fh-0" # "uniform-S5A3N200K3fh-0"
+    Ns = list(range(100, 1100, 100))
+    T = 10**5
     run_policies(random_example_name, "id", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns)
 
