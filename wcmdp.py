@@ -129,6 +129,17 @@ class SingleArmAnalyzer(object):
         print("Single armed policy=", self.policies[arm_id,:,:])
         print("---------------------------")
 
+
+    def plot_cost_slopes(self, cost_table:np.ndarray):
+        from matplotlib import pyplot as plt
+        for k in range(cost_table.shape[0]):
+            plt.plot(cost_table[k,:], label="type-{}".format(k),color="C{}".format(k))
+        plt.xlabel("arms")
+        plt.ylabel("expected costs")
+        plt.legend()
+        plt.savefig("cost_slopes.png")
+            
+
     def reassign_ID(self, method):
         """
         run this method after solving the LP
@@ -144,14 +155,17 @@ class SingleArmAnalyzer(object):
                     exp_cost_table[k,i] = np.dot(self.cost_tensor_list[k][i,:,:].flatten(), self.y.value[i,:,:].flatten())
             active_constrs = np.sum(exp_cost_table, axis=1) >= (0.5*np.array(self.alpha_list)*self.N)
             logging.debug("active constraints = {}".format(active_constrs))
-
+            self.plot_cost_slopes(exp_cost_table)
             # solve cost_thresh from a qaudratic equation to optimize the cost sloe
             # coefficients of a quadratic 
             co_a = 2*self.K - 1
             co_b = 0.5*self.alphamin - 2*self.K*self.cmax - 0.5*self.alphamin*self.K
             co_c = 0.5*self.alphamin*self.cmax*self.K
             cost_thresh = (-co_b - np.sqrt(co_b**2 - 4*co_a*co_c)) / (2*co_a)
-            nominal_intv_len = self.K * (self.cmax - cost_thresh) / (0.5*self.alphamin - cost_thresh)
+            # nominal_intv_len = self.K * (self.cmax - cost_thresh) / (0.5*self.alphamin - cost_thresh)
+            rem_costly_arms_table = exp_cost_table >= cost_thresh
+            num_costly_arms = np.sum(rem_costly_arms_table, axis=1)
+            nominal_intv_len = self.K * self.N / np.min(num_costly_arms)
             logging.debug("cost_thresh={}, nominal_intv_len={}".format(cost_thresh, nominal_intv_len))
             if nominal_intv_len > self.N:
                 nominal_intv_len = self.N
