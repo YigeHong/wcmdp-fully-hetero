@@ -7,7 +7,6 @@ import examples
 from examples import RandomExampleFullyHet
 import time
 import pickle
-from matplotlib import pyplot as plt
 import os
 import multiprocessing as mp
 import bisect
@@ -90,6 +89,7 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
         else:
             raise NotImplementedError
         if policy_name == "id":
+            # if policy is id policy, reassign the ID, or obtain the existing reassigned order from the file
             if ("new_orders_dict" in setting_and_data) and (N in setting_and_data["new_orders_dict"]):
                 new_orders = setting_and_data["new_orders_dict"][N]
             else:
@@ -97,22 +97,25 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                 new_orders = analyzer.reassign_ID(method="random") ### todo: use method="intervals" after fixing it
                 toc_reassign = time.time()
                 print("Time for reassign ID = {}".format(toc_reassign-tic_reassign))
-                new_orders_dict[N] = new_orders
+            new_orders_dict[N] = new_orders
             print("new_orders= ", new_orders)
         # simulation loops
         for rep in range(num_reps):
             full_reward_trace[(rep, N)] = []
+            # generate the initial states
             if init_method == "random":
                 init_states = np.random.choice(np.arange(0, setting.sspa_size), N, replace=True)
             elif init_method == "same":
                 init_states = np.zeros((N,))
             else:
                 raise NotImplementedError
+            # initialize the simulation for this N and replication
+            wcmdp = WCMDP(sspa_size, aspa_size, N, trans_tensor, reward_tensor, init_states)
+            # simulations for each policy
             if policy_name == "id":
-                # instantiate WCMDP and IDPolicy; permute the dimensions according to the new_orders generated from ID reassignment
-                wcmdp = WCMDP(sspa_size, aspa_size, N, trans_tensor[new_orders,:,:,:], reward_tensor[new_orders,:,:], init_states[new_orders])
-                permuted_cost_tensor_list = [cost_tensor[new_orders,:,:] for cost_tensor in cost_tensor_list]
-                policy = IDPolicy(sspa_size, aspa_size, N, single_armed_policies[new_orders,:,:], K, permuted_cost_tensor_list, alpha_list)
+                # define the id policy
+                policy = IDPolicy(sspa_size, aspa_size, N, single_armed_policies, K, cost_tensor_list, alpha_list,
+                                  permuted_orders=new_orders)
                 # start simulations loop
                 total_reward = 0
                 recent_total_reward = 0
@@ -126,14 +129,10 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                     recent_total_Nstar += N_star
                     if (t+1)%save_mean_every == 0:
                         full_reward_trace[(rep, N)].append(recent_total_reward / save_mean_every)
-                        print("t={}, recent_average_reward/opt_value={} recent_average_Nstar/N={}".format(
+                        print("t={}, recent_average_reward/upper_bound={} recent_average_Nstar/N={}".format(
                             t, recent_total_reward/save_mean_every/opt_value, recent_total_Nstar/save_mean_every/N))
                         recent_total_reward = 0
                         recent_total_Nstar = 0
-                    # if t%100 == 0:
-                    #     sa_fracs = sa_list_to_freq(setting.sspa_size, cur_states, actions)
-                    #     s_fracs = np.sum(sa_fracs, axis=1)
-                    #     print("t={}\ns_fracs={}".format(t, s_fracs))
             else:
                 raise NotImplementedError
             avg_reward = total_reward / T
@@ -141,6 +140,7 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
             print("setting={}, policy={}, N={}, rep_id={}, avg_reward/upper_bound={}, total gap={}, note={}".format(
                 setting_name, policy_name, N, rep, avg_reward/opt_value, N*(opt_value-avg_reward), note))
 
+            # save the data
             if not debug:
                 if os.path.exists(data_file_name):
                     # write the data in place; overwrite those traces with the same (rep, N)
@@ -172,8 +172,8 @@ if __name__ == "__main__":
         os.mkdir("examples")
     if not os.path.exists("fig_data"):
         os.mkdir("fig_data")
-    random_example_name = "uniform-S5A3N200K3fh-0"
-    Ns = list(range(20, 220, 20))
-    T = 10000
-    run_policies(random_example_name, "id", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns)
+    random_example_name = "uniform-S10A4N1000K3fh-0" #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
+    Ns = list(range(100, 1100, 100))
+    T = 10**4
+    run_policies(random_example_name, "id", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns, note="test1")
 

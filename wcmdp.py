@@ -293,6 +293,9 @@ class WCMDP(object):
             self.states = init_states.copy()
         else:
             self.states = np.zeros((self.N,))
+        # check the dimensions
+        assert self.reward_tensor.shape == (self.N, self.sspa_size, self.aspa_size)
+        assert self.trans_tensor.shape == (self.N, self.sspa_size, self.aspa_size, self.sspa_size)
 
     def get_states(self):
         return self.states.copy()
@@ -330,7 +333,7 @@ class WCMDP(object):
 
 
 class IDPolicy(object):
-    def __init__(self, sspa_size, aspa_size, N, policies, K, cost_tensor_list, alpha_list):
+    def __init__(self, sspa_size, aspa_size, N, policies, K, cost_tensor_list, alpha_list, permuted_orders):
         self.sspa_size = sspa_size
         self.sspa = np.array(list(range(self.sspa_size)), dtype=int)
         self.aspa_size = aspa_size
@@ -344,17 +347,15 @@ class IDPolicy(object):
         self.K = K
         self.cost_tensor_list = cost_tensor_list
         self.alpha_list = alpha_list
+        self.permuted_orders = permuted_orders # the permuted order under which ID-based prioritization is applied
         self.EPS = 1e-8
 
-        # # compute the single-armed policies from the solution y
-        # self.state_probs = np.sum(self.y, axis=2)
-        # self.policies = np.zeros((self.N, self.sspa_size, self.aspa_size))
-        # for i in range(self.N):
-        #     for s in self.sspa:
-        #         if self.state_probs[i, s] > self.EPS:
-        #             self.policies[i, s, :] = y[i, s, :] / self.state_probs[i, s]
-        #         else:
-        #             self.policies[i, s, :] = 1 / self.aspa_size
+        # check the dimensions
+        for cost_tensor in cost_tensor_list:
+            assert cost_tensor.shape == (self.N, self.sspa_size, self.aspa_size)
+        for alpha in self.alpha_list:
+            assert len(alpha.shape) == 0
+        # check that the single-armed policy is a valid set of conditional distributions
         if not np.allclose(np.sum(self.policies, axis=2), np.ones((self.N, self.sspa_size)), atol=1e-4):
             print("policy definition wrong, the action probs do not sum up to 1. The wrong arms and policies are")
             for i in range(self.N):
@@ -367,26 +368,41 @@ class IDPolicy(object):
         :param cur_states: the current states of the arms
         :return: the actions taken by the arms under the policy
         """
+        # randomly sample actions using the single-armed policies
         actions = np.zeros((self.N,), dtype=int)
         for i in range(self.N):
             actions[i] = np.random.choice(self.aspa, size=1, p=self.policies[i,cur_states[i],:])
 
+        # permute the states according to self.permuted_orders
+        permuted_states = cur_states[self.permuted_orders]
+        permuted_actions = actions[self.permuted_orders]
+
+        # compute partial sums of cost consumption under the permuted ID
         cost_partial_sum_table = np.zeros((self.K, self.N,))
         for k in range(self.K):
+            # permute the cost tensor according to the new IDs
+            permuted_cost_tensor = self.cost_tensor_list[k][self.permuted_orders,:,:]
             for i in range(self.N):
                 if i == 0:
-                    cost_partial_sum_table[k,i] = self.cost_tensor_list[k][i, cur_states[i], actions[i]]
+                    cost_partial_sum_table[k,i] = permuted_cost_tensor[i, permuted_states[i], permuted_actions[i]]
                 else:
-                    cost_partial_sum_table[k,i] = cost_partial_sum_table[k,i-1] + self.cost_tensor_list[k][i, cur_states[i], actions[i]]
+                    cost_partial_sum_table[k,i] = cost_partial_sum_table[k,i-1] + permuted_cost_tensor[i, permuted_states[i], permuted_actions[i]]
+        # find a maximal subset of arms that can follow the single-armed policy
         budget_vec = self.N * np.array(self.alpha_list)
-        conform_table = cost_partial_sum_table < np.expand_dims(budget_vec, axis=1)
+        conform_table = cost_partial_sum_table <= np.expand_dims(budget_vec, axis=1)
         conform_arms_vec = np.prod(conform_table, axis=0)
         non_conform_arms_list = np.where(conform_arms_vec==0)[0]
         N_star = np.min(non_conform_arms_list) if len(non_conform_arms_list) > 0 else self.N # i < N_star follow the single-armed policy
-        actions[N_star:] = 0
+        # rectify permuted actions accordingly
+        permuted_actions[N_star:] = 0
 
+        # checking budget conformity
         for k in range(self.K):
-            assert sum([self.cost_tensor_list[k][i, cur_states[i], actions[i]] for i in range(self.N)]) <= budget_vec[k], "{}-th cost exceeds budget"
+            permuted_cost_tensor = self.cost_tensor_list[k][self.permuted_orders,:,:]
+            assert sum([permuted_cost_tensor[i, permuted_states[i], permuted_actions[i]] for i in range(self.N)]) <= budget_vec[k], "{}-th cost exceeds budget"
+
+        # map the change back to the actions in the original order
+        actions[self.permuted_orders] = permuted_actions
 
         return actions, N_star
 
