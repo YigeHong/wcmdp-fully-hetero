@@ -94,7 +94,7 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                 new_orders = setting_and_data["new_orders_dict"][N]
             else:
                 tic_reassign = time.time()
-                new_orders = analyzer.reassign_ID(method="random") ### todo: use method="intervals" after fixing it
+                new_orders = analyzer.reassign_ID(method="intervals") ### todo: use method="intervals" after fixing it
                 toc_reassign = time.time()
                 print("Time for reassign ID = {}".format(toc_reassign-tic_reassign))
             new_orders_dict[N] = new_orders
@@ -172,7 +172,7 @@ if __name__ == "__main__":
         os.mkdir("examples")
     if not os.path.exists("fig_data"):
         os.mkdir("fig_data")
-    random_example_name = "uniform-S10A4N1000K3fh-0" #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
+    random_example_name = "uniform-S5A3N200K3fh-0" #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
     Ns = list(range(100, 1100, 100))
     T = 10**4
     run_policies(random_example_name, "id", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns, note="test1")

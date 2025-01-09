@@ -138,6 +138,7 @@ class SingleArmAnalyzer(object):
         plt.ylabel("expected costs")
         plt.legend()
         plt.savefig("cost_slopes.png")
+        plt.close()
             
 
     def reassign_ID(self, method):
@@ -148,6 +149,24 @@ class SingleArmAnalyzer(object):
         """
         if method == "random":
             return np.random.permutation(self.N)
+        elif method == "ascending":
+            exp_cost_table = np.zeros((self.K, self.N,))
+            for k in range(self.K):
+                for i in range(self.N):
+                    exp_cost_table[k,i] = np.dot(self.cost_tensor_list[k][i,:,:].flatten(), self.y.value[i,:,:].flatten())
+            self.plot_cost_slopes(exp_cost_table)
+            new_orders = np.argsort(np.sum(exp_cost_table, axis=0))
+            self.plot_cost_slopes(exp_cost_table[:,new_orders])
+            return new_orders
+        elif method == "descending":
+            exp_cost_table = np.zeros((self.K, self.N,))
+            for k in range(self.K):
+                for i in range(self.N):
+                    exp_cost_table[k,i] = np.dot(self.cost_tensor_list[k][i,:,:].flatten(), self.y.value[i,:,:].flatten())
+            self.plot_cost_slopes(exp_cost_table)
+            new_orders = np.argsort(-np.sum(exp_cost_table, axis=0))
+            self.plot_cost_slopes(exp_cost_table[:,new_orders])
+            return new_orders
         elif method == "intervals":
             exp_cost_table = np.zeros((self.K, self.N,))
             for k in range(self.K):
@@ -172,101 +191,127 @@ class SingleArmAnalyzer(object):
 
             rem_costly_arms_table = exp_cost_table >= cost_thresh
             logging.debug("rem_costly_arms_table=\n{}".format(rem_costly_arms_table))
-            non_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0) == 0)[0])
-            points_to_next_costly = np.zeros((self.K,), dtype=int) # pointers to the smallest-index arm whose type-k cost is larger than the threshold
-            for k in range(self.K):
-                if active_constrs[k] == 1:
-                    type_k_costly = np.where(rem_costly_arms_table[k,:]>0)[0]
-                    # type_k_costly must be non-empty if the k-th budget contraint is active
-                    points_to_next_costly[k] = np.min(type_k_costly) #if len(type_k_costly) > 0 else self.N
-                else:
-                    points_to_next_costly[k] = self.N
-            costly_groups = [] # groups of arms; the total type-k cost of each group will be larger than cost_thresh, for each k
-            rem_arms_list = []
-            while True:
-                # each outer loop creates a group of costly arms
-                costly_groups.append([])
-                fulfilled_cost_types = np.zeros((self.K,))
+            intv_len = int(np.ceil(nominal_intv_len))
+            num_intervals = int(np.floor(self.N / intv_len))
+            used_arms = np.zeros((self.N,), dtype=int)
+            new_orders = np.full((self.N,), -1, dtype=int)
+            for interval in range(num_intervals):
+                cur = interval * intv_len
                 for k in range(self.K):
-                    if fulfilled_cost_types[k] == 0:
-                        # find the next arm to add
-                        arm_to_add = points_to_next_costly[k]
-                        if arm_to_add >= self.N:
-                            continue
-                        assert rem_costly_arms_table[k,arm_to_add] > 0 # temporary, check correctness of the code
-                        # add the arm, update tables
-                        costly_groups[-1].append(arm_to_add)
-                        fulfilled_cost_types += rem_costly_arms_table[:,arm_to_add]
-                        rem_costly_arms_table[:,arm_to_add] = 0
-                        # for each cost type k, find the next costly arm that hasn't been added into the groups
-                        for _k in range(self.K):
-                            new_pointer = points_to_next_costly[_k]
-                            while (new_pointer < self.N) and (rem_costly_arms_table[_k, new_pointer] == 0):
-                                new_pointer += 1
-                            points_to_next_costly[_k] = new_pointer
-                    else:
-                        continue
-                logging.debug(points_to_next_costly)
-                if np.any((points_to_next_costly >= self.N) * active_constrs):
-                    if np.any((fulfilled_cost_types == 0) * active_constrs):
-                        # if the cost of last group is not fulfilled, remove from the groups, and add them into the remaining arms
-                        unfulfilled_group = costly_groups.pop()
-                        rem_arms_list.extend(unfulfilled_group)
-                    # merge the costly arms that are not added into the groups into non_costly_arms_list
-                    rem_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0)>0)[0])
-                    rem_arms_list.extend(rem_costly_arms_list)
-                    rem_arms_list.extend(non_costly_arms_list)
-                    logging.debug("number of arms in costly groups={}, rem_costly_arms_list={}, non_costly_arms_list={}".format(
-                            sum([len(group) for group in costly_groups]), len(rem_costly_arms_list), len(non_costly_arms_list)))
-
-                    break
-            logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
-                sum([len(group) for group in costly_groups]), len(rem_arms_list)))
-
-            # calculate the total number of intervals of each length
-            intv_len_1 = int(np.ceil(nominal_intv_len))
-            num_intvs = int(np.floor(self.N / intv_len_1))
-            intv_len_2 = intv_len_1 - 1
-            num_len_1_intv = self.N - num_intvs * intv_len_2 # todo: there could be num_len_1_intv > num_intvs
-            assert num_len_1_intv * intv_len_1 + (num_intvs - num_len_1_intv) * intv_len_2 == self.N
-            logging.debug("num_len_1_intv={}, intv_len_1={}, intv_len_2={}".format(num_len_1_intv, intv_len_1, intv_len_2))
-            logging.debug("costly group lengths = {}".format([len(group) for group in costly_groups]))
-            # merge the extra groups into remaining arms
-            for group in costly_groups[num_intvs:]:
-                rem_arms_list.extend(group)
-            costly_groups = costly_groups[0:num_intvs]
-            np.random.shuffle(rem_arms_list)
-            logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
-                sum([len(group) for group in costly_groups]), len(rem_arms_list)))
-            # combine the costly arm groups and the remaining arms into intervals of the lengths specified above
-            rem_arms_pt = 0
-            for ell in range(num_intvs):
-                num_exist = len(costly_groups[ell])
-                num_to_add = intv_len_1-num_exist if ell < num_len_1_intv else intv_len_2-num_exist
-                assert num_to_add >= 0
-                arms_to_add = rem_arms_list[rem_arms_pt:(rem_arms_pt+num_to_add)]
-                costly_groups[ell].extend(arms_to_add)
-                rem_arms_pt += num_to_add
-            logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
-                sum([len(group) for group in costly_groups]), len(rem_arms_list)))
-
-            new_orders = functools.reduce(operator.iconcat, costly_groups, [])
-            new_orders = np.array(new_orders)
-
-            assert np.allclose(np.sort(new_orders), np.arange(self.N, dtype=int))
-            for k in range(self.K):
-                if active_constrs[k] == 1:
-                    temp_pt = 0
-                    for ell in range(num_intvs):
-                        intv_len = intv_len_1 if ell < num_len_1_intv else intv_len_2
-                        cur_interval_exp_cost =  sum([exp_cost_table[k,i] for i in new_orders[ell:(ell+intv_len)]])
-                        logging.debug("cur_interval_exp_cost={}".format(cur_interval_exp_cost))
-                        assert cur_interval_exp_cost>= cost_thresh, \
-                            "{}-th interval violates type-{} cost-slope require requirement: actual expected cost= {} < cost threshold = {};" \
-                            " involving arms with old {}".format(ell, k, cur_interval_exp_cost, cost_thresh, new_orders[ell:(ell+intv_len)])
-                        temp_pt += intv_len
-
+                    k_cost_interval_sum = np.sum(exp_cost_table[k,i] for i in range(self.N) if new_orders[i] >= interval*intv_len and new_orders[i] < (interval+1)*intv_len)
+                    if k_cost_interval_sum < cost_thresh:
+                        for i in range(self.N):
+                            if used_arms[i] == 0 and rem_costly_arms_table[k,i] == 1:
+                                new_orders[cur] = i    ## check whether new_orders[i] = cur or reverse
+                                used_arms[i] = 1
+                                cur += 1
+                                break
+            unused_arms = set(np.where(used_arms == 0)[0])
+            for i in range(self.N):
+                if new_orders[i] == -1:
+                    new_orders[i] = unused_arms.pop()
+            ## sanity check
+            assert len(unused_arms) == 0
+            assert np.all(np.sort(new_orders) == np.arange(self.N)), "new_orders is not a permutation of 0,1,...,N-1"
+            self.plot_cost_slopes(exp_cost_table[:,new_orders])
             return new_orders
+
+                    
+            # non_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0) == 0)[0])
+            # points_to_next_costly = np.zeros((self.K,), dtype=int) # pointers to the smallest-index arm whose type-k cost is larger than the threshold
+            # for k in range(self.K):
+            #     if active_constrs[k] == 1:
+            #         type_k_costly = np.where(rem_costly_arms_table[k,:]>0)[0]
+            #         # type_k_costly must be non-empty if the k-th budget contraint is active
+            #         points_to_next_costly[k] = np.min(type_k_costly) #if len(type_k_costly) > 0 else self.N
+            #     else:
+            #         points_to_next_costly[k] = self.N
+            # costly_groups = [] # groups of arms; the total type-k cost of each group will be larger than cost_thresh, for each k
+            # rem_arms_list = []
+            # while True:
+            #     # each outer loop creates a group of costly arms
+            #     costly_groups.append([])
+            #     fulfilled_cost_types = np.zeros((self.K,))
+            #     for k in range(self.K):
+            #         if fulfilled_cost_types[k] == 0:
+            #             # find the next arm to add
+            #             arm_to_add = points_to_next_costly[k]
+            #             if arm_to_add >= self.N:
+            #                 continue
+            #             assert rem_costly_arms_table[k,arm_to_add] > 0 # temporary, check correctness of the code
+            #             # add the arm, update tables
+            #             costly_groups[-1].append(arm_to_add)
+            #             fulfilled_cost_types += rem_costly_arms_table[:,arm_to_add]
+            #             rem_costly_arms_table[:,arm_to_add] = 0
+            #             # for each cost type k, find the next costly arm that hasn't been added into the groups
+            #             for _k in range(self.K):
+            #                 new_pointer = points_to_next_costly[_k]
+            #                 while (new_pointer < self.N) and (rem_costly_arms_table[_k, new_pointer] == 0):
+            #                     new_pointer += 1
+            #                 points_to_next_costly[_k] = new_pointer
+            #         else:
+            #             continue
+            #     logging.debug(points_to_next_costly)
+            #     if np.any((points_to_next_costly >= self.N) * active_constrs):
+            #         if np.any((fulfilled_cost_types == 0) * active_constrs):
+            #             # if the cost of last group is not fulfilled, remove from the groups, and add them into the remaining arms
+            #             unfulfilled_group = costly_groups.pop()
+            #             rem_arms_list.extend(unfulfilled_group)
+            #         # merge the costly arms that are not added into the groups into non_costly_arms_list
+            #         rem_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0)>0)[0])
+            #         rem_arms_list.extend(rem_costly_arms_list)
+            #         rem_arms_list.extend(non_costly_arms_list)
+            #         logging.debug("number of arms in costly groups={}, rem_costly_arms_list={}, non_costly_arms_list={}".format(
+            #                 sum([len(group) for group in costly_groups]), len(rem_costly_arms_list), len(non_costly_arms_list)))
+
+            #         break
+            # logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
+            #     sum([len(group) for group in costly_groups]), len(rem_arms_list)))
+
+            # # calculate the total number of intervals of each length
+            # intv_len_1 = int(np.ceil(nominal_intv_len))
+            # num_intvs = int(np.floor(self.N / intv_len_1))
+            # intv_len_2 = intv_len_1 - 1
+            # num_len_1_intv = self.N - num_intvs * intv_len_2 # todo: there could be num_len_1_intv > num_intvs
+            # assert num_len_1_intv * intv_len_1 + (num_intvs - num_len_1_intv) * intv_len_2 == self.N
+            # logging.debug("num_len_1_intv={}, intv_len_1={}, intv_len_2={}".format(num_len_1_intv, intv_len_1, intv_len_2))
+            # logging.debug("costly group lengths = {}".format([len(group) for group in costly_groups]))
+            # # merge the extra groups into remaining arms
+            # for group in costly_groups[num_intvs:]:
+            #     rem_arms_list.extend(group)
+            # costly_groups = costly_groups[0:num_intvs]
+            # np.random.shuffle(rem_arms_list)
+            # logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
+            #     sum([len(group) for group in costly_groups]), len(rem_arms_list)))
+            # # combine the costly arm groups and the remaining arms into intervals of the lengths specified above
+            # rem_arms_pt = 0
+            # for ell in range(num_intvs):
+            #     num_exist = len(costly_groups[ell])
+            #     num_to_add = intv_len_1-num_exist if ell < num_len_1_intv else intv_len_2-num_exist
+            #     assert num_to_add >= 0
+            #     arms_to_add = rem_arms_list[rem_arms_pt:(rem_arms_pt+num_to_add)]
+            #     costly_groups[ell].extend(arms_to_add)
+            #     rem_arms_pt += num_to_add
+            # logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
+            #     sum([len(group) for group in costly_groups]), len(rem_arms_list)))
+
+            # new_orders = functools.reduce(operator.iconcat, costly_groups, [])
+            # new_orders = np.array(new_orders)
+
+            # assert np.allclose(np.sort(new_orders), np.arange(self.N, dtype=int))
+            # for k in range(self.K):
+            #     if active_constrs[k] == 1:
+            #         temp_pt = 0
+            #         for ell in range(num_intvs):
+            #             intv_len = intv_len_1 if ell < num_len_1_intv else intv_len_2
+            #             cur_interval_exp_cost =  sum([exp_cost_table[k,i] for i in new_orders[ell:(ell+intv_len)]])
+            #             logging.debug("cur_interval_exp_cost={}".format(cur_interval_exp_cost))
+            #             assert cur_interval_exp_cost>= cost_thresh, \
+            #                 "{}-th interval violates type-{} cost-slope require requirement: actual expected cost= {} < cost threshold = {};" \
+            #                 " involving arms with old {}".format(ell, k, cur_interval_exp_cost, cost_thresh, new_orders[ell:(ell+intv_len)])
+            #             temp_pt += intv_len
+
+            # return new_orders
         else:
             raise NotImplementedError
 
