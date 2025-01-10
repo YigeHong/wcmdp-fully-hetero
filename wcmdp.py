@@ -156,25 +156,8 @@ class SingleArmAnalyzer(object):
         """
         if method == "random":
             return np.random.permutation(self.N)
-        elif method == "ascending":
-            exp_cost_table = np.zeros((self.K, self.N,))
-            for k in range(self.K):
-                for i in range(self.N):
-                    exp_cost_table[k,i] = np.dot(self.cost_tensor_list[k][i,:,:].flatten(), self.y.value[i,:,:].flatten())
-            self.plot_cost_slopes(exp_cost_table)
-            new_orders = np.argsort(np.sum(exp_cost_table, axis=0))
-            self.plot_cost_slopes(exp_cost_table[:,new_orders])
-            return new_orders
-        elif method == "descending":
-            exp_cost_table = np.zeros((self.K, self.N,))
-            for k in range(self.K):
-                for i in range(self.N):
-                    exp_cost_table[k,i] = np.dot(self.cost_tensor_list[k][i,:,:].flatten(), self.y.value[i,:,:].flatten())
-            self.plot_cost_slopes(exp_cost_table)
-            new_orders = np.argsort(-np.sum(exp_cost_table, axis=0))
-            self.plot_cost_slopes(exp_cost_table[:,new_orders])
-            return new_orders
-        elif method == "intervals":
+        else:
+            # preprocess: compute exp_cost_table
             # arrange each type of arms sequentially, and map from type to IDs
             type2ids_table = np.zeros((self.num_types, self.N))
             type_frac_partial_sums = np.zeros((self.num_types))
@@ -196,48 +179,58 @@ class SingleArmAnalyzer(object):
             active_constrs = np.sum(exp_cost_table, axis=1) >= (0.5*np.array(self.alpha_list)*self.N)
             logging.debug("active constraints = {}".format(active_constrs))
             self.plot_cost_slopes(exp_cost_table)
+            # assign the new IDs based on the exp_cost_table, in different ways
+            if method == "ascending":
+                new_orders = np.argsort(np.sum(exp_cost_table, axis=0))
+                self.plot_cost_slopes(exp_cost_table[:,new_orders])
+                return new_orders
+            elif method == "descending":
+                new_orders = np.argsort(-np.sum(exp_cost_table, axis=0))
+                self.plot_cost_slopes(exp_cost_table[:,new_orders])
+                return new_orders
+            elif method == "intervals":
+                # solve cost_thresh from a quadratic equation to optimize the cost slope
+                # coefficients of a quadratic function
+                co_a = 2*self.K - 1
+                co_b = 0.5*self.alphamin - 2*self.K*self.cmax - 0.5*self.alphamin*self.K
+                co_c = 0.5*self.alphamin*self.cmax*self.K
+                cost_thresh = (-co_b - np.sqrt(co_b**2 - 4*co_a*co_c)) / (2*co_a)
+                # nominal_intv_len = self.K * (self.cmax - cost_thresh) / (0.5*self.alphamin - cost_thresh)
+                rem_costly_arms_table = exp_cost_table >= cost_thresh
+                num_costly_arms = np.sum(rem_costly_arms_table, axis=1)
+                nominal_intv_len = self.K * self.N / np.min(num_costly_arms)
+                logging.debug("cost_thresh={}, nominal_intv_len={}".format(cost_thresh, nominal_intv_len))
+                if nominal_intv_len > self.N:
+                    nominal_intv_len = self.N
 
-            # solve cost_thresh from a quadratic equation to optimize the cost slope
-            # coefficients of a quadratic function
-            co_a = 2*self.K - 1
-            co_b = 0.5*self.alphamin - 2*self.K*self.cmax - 0.5*self.alphamin*self.K
-            co_c = 0.5*self.alphamin*self.cmax*self.K
-            cost_thresh = (-co_b - np.sqrt(co_b**2 - 4*co_a*co_c)) / (2*co_a)
-            # nominal_intv_len = self.K * (self.cmax - cost_thresh) / (0.5*self.alphamin - cost_thresh)
-            rem_costly_arms_table = exp_cost_table >= cost_thresh
-            num_costly_arms = np.sum(rem_costly_arms_table, axis=1)
-            nominal_intv_len = self.K * self.N / np.min(num_costly_arms)
-            logging.debug("cost_thresh={}, nominal_intv_len={}".format(cost_thresh, nominal_intv_len))
-            if nominal_intv_len > self.N:
-                nominal_intv_len = self.N
-
-            rem_costly_arms_table = exp_cost_table >= cost_thresh
-            logging.debug("rem_costly_arms_table=\n{}".format(rem_costly_arms_table))
-            intv_len = int(np.ceil(nominal_intv_len))
-            num_intervals = int(np.floor(self.N / intv_len))
-            used_arms = np.zeros((self.N,), dtype=int)
-            new_orders = np.full((self.N,), -1, dtype=int)
-            for interval in range(num_intervals):
-                cur = interval * intv_len
-                for k in range(self.K):
-                    k_cost_interval_sum = np.sum(exp_cost_table[k,i] for i in range(self.N) if new_orders[i] >= interval*intv_len and new_orders[i] < (interval+1)*intv_len)
-                    if k_cost_interval_sum < cost_thresh:
-                        for i in range(self.N):
-                            if used_arms[i] == 0 and rem_costly_arms_table[k,i] == 1:
-                                new_orders[cur] = i    ## check whether new_orders[i] = cur or reverse
-                                used_arms[i] = 1
-                                cur += 1
-                                break
-            unused_arms = set(np.where(used_arms == 0)[0])
-            for i in range(self.N):
-                if new_orders[i] == -1:
-                    new_orders[i] = unused_arms.pop()
-            ## sanity check
-            assert len(unused_arms) == 0
-            assert np.all(np.sort(new_orders) == np.arange(self.N)), "new_orders is not a permutation of 0,1,...,N-1"
-            self.plot_cost_slopes(exp_cost_table[:,new_orders])
-            return new_orders
-
+                rem_costly_arms_table = exp_cost_table >= cost_thresh
+                logging.debug("rem_costly_arms_table=\n{}".format(rem_costly_arms_table))
+                intv_len = int(np.ceil(nominal_intv_len))
+                num_intervals = int(np.floor(self.N / intv_len))
+                used_arms = np.zeros((self.N,), dtype=int)
+                new_orders = np.full((self.N,), -1, dtype=int)
+                for interval in range(num_intervals):
+                    cur = interval * intv_len
+                    for k in range(self.K):
+                        k_cost_interval_sum = np.sum(exp_cost_table[k,i] for i in range(self.N) if new_orders[i] >= interval*intv_len and new_orders[i] < (interval+1)*intv_len)
+                        if k_cost_interval_sum < cost_thresh:
+                            for i in range(self.N):
+                                if used_arms[i] == 0 and rem_costly_arms_table[k,i] == 1:
+                                    new_orders[cur] = i    ## check whether new_orders[i] = cur or reverse
+                                    used_arms[i] = 1
+                                    cur += 1
+                                    break
+                unused_arms = set(np.where(used_arms == 0)[0])
+                for i in range(self.N):
+                    if new_orders[i] == -1:
+                        new_orders[i] = unused_arms.pop()
+                ## sanity check
+                assert len(unused_arms) == 0
+                assert np.all(np.sort(new_orders) == np.arange(self.N)), "new_orders is not a permutation of 0,1,...,N-1"
+                self.plot_cost_slopes(exp_cost_table[:,new_orders])
+                return new_orders
+            else:
+                raise NotImplementedError
 
             # non_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0) == 0)[0])
             # points_to_next_costly = np.zeros((self.K,), dtype=int) # pointers to the smallest-index arm whose type-k cost is larger than the threshold
@@ -334,9 +327,6 @@ class SingleArmAnalyzer(object):
             #             temp_pt += intv_len
 
             # return new_orders
-        else:
-            raise NotImplementedError
-
 
 class WCMDP(object):
     """
