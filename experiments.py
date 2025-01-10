@@ -4,7 +4,7 @@ import scipy
 
 from wcmdp import *
 import examples
-from examples import RandomExampleFullyHet
+from examples import RandomExampleFullyHet, RandomExampleTypedHet
 import time
 import pickle
 import os
@@ -68,33 +68,36 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
     for N in Ns:
         if (skip_N_below is not None) and (N <= skip_N_below):
             continue
-        if setting.typed_het == False:
-            # obtain the parameters
-            sspa_size = setting.sspa_size
-            aspa_size = setting.aspa_size
-            trans_tensor = setting.get_trans_tensor(N)
-            reward_tensor = setting.get_reward_tensor(N)
-            cost_tensor_list = setting.get_cost_tensor_list(N)
-            alpha_list = setting.alpha_list
-            K = setting.K
-            # solve LP, obtain single-armed policies
-            tic_lp = time.time()
-            analyzer = SingleArmAnalyzer(sspa_size, aspa_size, N, trans_tensor, reward_tensor, K, cost_tensor_list, alpha_list)
-            opt_value, y = analyzer.solve_lp()
-            toc_lp = time.time()
-            print("Time for solving LP = {}, with fully Heterogeneous arms, |S|={}, |A|={} and N={}".format(toc_lp-tic_lp, sspa_size, aspa_size, N))
-            single_armed_policies = analyzer.policies
-            print("Reward upper bound from LP = {}".format(opt_value))
-            upper_bound_dict[N] = opt_value
-        else:
-            raise NotImplementedError
+        sspa_size = setting.sspa_size
+        aspa_size = setting.aspa_size
+        trans_tensor_N = setting.get_trans_tensor(N)  # shape = (num_types, ...); when fully heterogeneous, num_types=N
+        reward_tensor_N = setting.get_reward_tensor(N)
+        cost_tensor_list_N = setting.get_cost_tensor_list(N)
+        id2types_N = setting.get_type_vec(N)
+        type_fracs_N = setting.get_actual_type_fracs(N)
+        num_types = len(type_fracs_N)
+        alpha_list = setting.alpha_list
+        K = setting.K
+        tic_lp = time.time()
+        analyzer = SingleArmAnalyzer(sspa_size=sspa_size, aspa_size=aspa_size, N=N, type_fracs=type_fracs_N,
+                                     trans_tensor=trans_tensor_N, reward_tensor=reward_tensor_N, K=K,
+                                     cost_tensor_list=cost_tensor_list_N, alpha_list=alpha_list)
+        opt_value, y = analyzer.solve_lp()
+        for j in range(num_types):
+            analyzer.print_LP_solution(j)
+        analyzer.print_LP_solution(-1)
+        toc_lp = time.time()
+        print("Time for solving LP = {}, |S|={}, |A|={}, N={}, num_types={}".format(toc_lp-tic_lp, sspa_size, aspa_size, N, num_types))
+        single_armed_policies = analyzer.policies
+        upper_bound_dict[N] = opt_value
+        print("Reward upper bound from LP = {}".format(opt_value))
         if policy_name == "id":
             # if policy is id policy, reassign the ID, or obtain the existing reassigned order from the file
             if ("new_orders_dict" in setting_and_data) and (N in setting_and_data["new_orders_dict"]):
                 new_orders = setting_and_data["new_orders_dict"][N]
             else:
                 tic_reassign = time.time()
-                new_orders = analyzer.reassign_ID(method="intervals") ### todo: use method="intervals" after fixing it
+                new_orders = analyzer.reassign_ID(method="intervals")
                 toc_reassign = time.time()
                 print("Time for reassign ID = {}".format(toc_reassign-tic_reassign))
             new_orders_dict[N] = new_orders
@@ -104,25 +107,26 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
             full_reward_trace[(rep, N)] = []
             # generate the initial states
             if init_method == "random":
-                init_states = np.random.choice(np.arange(0, setting.sspa_size), N, replace=True)
+                init_states_N = np.random.choice(np.arange(0, setting.sspa_size), N, replace=True)
             elif init_method == "same":
-                init_states = np.zeros((N,))
+                init_states_N = np.zeros((N,))
             else:
                 raise NotImplementedError
             # initialize the simulation for this N and replication
-            wcmdp = WCMDP(sspa_size, aspa_size, N, trans_tensor, reward_tensor, init_states)
+            wcmdp = WCMDP(sspa_size=sspa_size, aspa_size=aspa_size, N=N, trans_tensor=trans_tensor_N,
+                          reward_tensor=reward_tensor_N, id2types=id2types_N, init_states=init_states_N)
             # simulations for each policy
             if policy_name == "id":
                 # define the id policy
-                policy = IDPolicy(sspa_size, aspa_size, N, single_armed_policies, K, cost_tensor_list, alpha_list,
-                                  permuted_orders=new_orders)
+                policy = IDPolicy(sspa_size=sspa_size, aspa_size=aspa_size, N=N, policies=single_armed_policies, K=K,
+                                  cost_tensor_list=cost_tensor_list_N, alpha_list=alpha_list, permuted_orders=new_orders)
                 # start simulations loop
                 total_reward = 0
                 recent_total_reward = 0
                 recent_total_Nstar = 0
                 for t in range(T):
                     cur_states = wcmdp.get_states()
-                    actions, N_star = policy.get_actions(cur_states)
+                    actions, N_star = policy.get_actions(id2types=id2types_N, cur_states=cur_states)
                     instant_reward = wcmdp.step(actions)
                     total_reward += instant_reward
                     recent_total_reward += instant_reward
@@ -172,8 +176,8 @@ if __name__ == "__main__":
         os.mkdir("examples")
     if not os.path.exists("fig_data"):
         os.mkdir("fig_data")
-    random_example_name = "uniform-S5A3N200K3fh-0" #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
-    Ns = list(range(100, 1100, 100))
-    T = 10**4
-    run_policies(random_example_name, "id", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns, note="test1")
+    for random_example_name in ["uniform-S10A4types5K4-0", "uniform-S10A4N1000K4fh-0"]: #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
+        Ns = list(range(100, 1100, 100))
+        T = 5*10**4
+        run_policies(random_example_name, "id", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns, note="test3")
 

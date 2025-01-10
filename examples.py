@@ -7,6 +7,9 @@ import os
 
 # todo: save the object using its attributes rather than the whole class
 
+# all classes need to have the following properties: sspa_size, aspa_size, alpha_list, K
+# and methods: get_trans_tensor, get_reward_tensor, get_cost_tensor_list, get_type_vec, get_actual_type_frac
+
 class RandomExampleFullyHet(object):
     def __init__(self, sspa_size, aspa_size, max_N, K, distr, parameters):
         """
@@ -18,7 +21,7 @@ class RandomExampleFullyHet(object):
         :param distr: string, so far only "dirichlet" is implemented; the distribution for generating each kernel
         :param parameters: parameters of the distribution
         """
-        self.typed_het = False
+        # self.typed_het = False
         self.sspa_size = sspa_size
         self.aspa_size = aspa_size
         self.max_N = max_N
@@ -44,7 +47,14 @@ class RandomExampleFullyHet(object):
         else:
             raise NotImplementedError
         # make sure alpha is not too close to 0 or 1; round to integer multiples of 20
-        self.alpha_list = list(np.round(20*np.random.uniform(0.1,0.9, size=K))/20)
+        raw_alphas = np.random.uniform(0.1,0.9, size=K)
+        self.alpha_list = [round(20*alpha)/20 for alpha in raw_alphas]
+
+    def get_type_vec(self, N):
+        return np.arange(N, dtype=int)
+
+    def get_actual_type_fracs(self, N):
+        return np.ones((N,), dtype=np.float64) / N
 
     def get_reward_tensor(self, N):
         return self.reward_tensor[0:N,:,:]
@@ -56,8 +66,8 @@ class RandomExampleFullyHet(object):
         return [cost_tensor[0:N,:,:] for cost_tensor in self.cost_tensor_list]
 
     def print(self, verbose=False):
-        print("typed_het={}, sspa_size={}, aspa_size={}\n max_N={} K={},distr={}, parameters={}".format(
-            self.typed_het, self.sspa_size, self.aspa_size, self.max_N, self.K, self.distr, self.parameters))
+        print("sspa_size={}, aspa_size={}\n max_N={} K={},distr={}, parameters={}".format(
+            self.sspa_size, self.aspa_size, self.max_N, self.K, self.distr, self.parameters))
         print("rmax = {}, cmax = {}, alphamin = {}".format(np.max(self.reward_tensor),
                                                            np.max(np.array(self.cost_tensor_list)),
                                                            np.min(np.array(self.alpha_list))))
@@ -70,7 +80,6 @@ class RandomExampleFullyHet(object):
             print(self.trans_tensor)
             print("cost tensor list:")
             print(self.cost_tensor_list)
-
 
 
 
@@ -112,20 +121,74 @@ class RandomExampleTypedHet(object):
         else:
             raise NotImplementedError
         # make sure alpha is not too close to 0 or 1; round to integer multiples of 20
-        self.alpha_list = list(np.round(20*np.random.uniform(0.1,0.9), size=K)/20)
+        raw_alphas = np.random.uniform(0.1,0.9, size=K)
+        self.alpha_list = [round(20*alpha)/20 for alpha in raw_alphas]
 
-    def get_actual_type_frac(self, N):
-        frac_partial_sums = np.zeros((self.num_types,))
-        frac_partial_sums[0] = self.nominal_type_frac[0]
-        for type in range(1, self.num_types):
-            frac_partial_sums[type] = frac_partial_sums[type-1] + self.nominal_type_frac[type]
-        for type in range(self.num_types):
-            frac_partial_sums[type] = round(N*frac_partial_sums[type])/N  # round to integer multiples of N
+        # the CDF of the arms' nominal type distribution
+        self.nominal_type_cdf = np.zeros((self.num_types,))
+        self.nominal_type_cdf[0] = self.nominal_type_frac[0]
+        for t_ind in range(1, self.num_types):
+            self.nominal_type_cdf[t_ind] = self.nominal_type_cdf[t_ind-1] + self.nominal_type_frac[t_ind]
+        # store the id2type vectors that have been computed, to save computations
+        self.all_id2type = {}
+
+    def get_actual_type_fracs(self, N):
+        # first compute the CDF of type distributions, rounded to integer multiples of N
+        # if N in self.type_cdfs_computed:
+        #     type_cdf_N = self.type_cdfs_computed[N]
+        # else:
+        #     type_cdf_N = np.zeros((self.num_types,))
+        #     type_cdf_N[0] = self.nominal_type_frac[0]
+        #     for type in range(1, self.num_types):
+        #         type_cdf_N[type] = type_cdf_N[type-1] + self.nominal_type_frac[type]
+        #     for type in range(self.num_types):
+        #         type_cdf_N[type] = round(N*type_cdf_N[type])/N  # rounding
+        #     self.type_cdfs_computed[N] = type_cdf_N
         actual_type_frac = np.zeros((self.num_types,))
-        actual_type_frac[0] = frac_partial_sums[0]
-        for type in range(self.num_types):
-            actual_type_frac[type] = frac_partial_sums[type] - frac_partial_sums[type-1]
+        actual_type_frac[0] = round(self.nominal_type_cdf[0]*N)/N # round to integer multiples of N
+        for t_ind in range(1, self.num_types):
+            actual_type_frac[t_ind] = round(self.nominal_type_cdf[t_ind]*N)/N - round(self.nominal_type_cdf[t_ind-1]*N)/N
         return actual_type_frac
+
+    def get_type_vec(self, N):
+        if N in self.all_id2type:
+            return self.all_id2type[N]
+        else:
+            id2type = np.zeros((N,), dtype=int)
+            for t_ind in range(self.num_types):
+                start_id = int(round(self.nominal_type_cdf[t_ind-1]*N)) if t_ind >=1 else 0
+                end_id = int(round(self.nominal_type_cdf[t_ind]*N))
+                for i in range(start_id, end_id):
+                    id2type[i] = t_ind
+            self.all_id2type[N] = id2type
+            return id2type
+
+    def get_reward_tensor(self, N):
+        return self.reward_tensor.copy()
+
+    def get_trans_tensor(self, N):
+        return self.trans_tensor.copy()
+
+    def get_cost_tensor_list(self, N):
+        return self.cost_tensor_list.copy()
+
+    def print(self, verbose=False):
+        print("sspa_size={}, aspa_size={}\n num_types={} K={},distr={}, parameters={}".format(
+            self.sspa_size, self.aspa_size, self.num_types, self.K, self.distr, self.parameters))
+        print("rmax = {}, cmax = {}, alphamin = {}".format(np.max(self.reward_tensor),
+                                                           np.max(np.array(self.cost_tensor_list)),
+                                                           np.min(np.array(self.alpha_list))))
+        print("alpha list:")
+        print(self.alpha_list)
+        print("nominal type fractions:")
+        print(self.nominal_type_frac)
+        if verbose:
+            print("reward tensor:")
+            print(self.reward_tensor)
+            print("trans tensor:")
+            print(self.trans_tensor)
+            print("cost tensor list:")
+            print(self.cost_tensor_list)
 
 
 def clip_and_normalize(tensor, epsilon, axis):
@@ -138,11 +201,14 @@ if __name__ == "__main__":
     np.random.seed(42)
     sspa_size = 10
     aspa_size = 4
-    max_N = 1000
+    # max_N = 1000
+    num_types = 5
+    nominal_type_frac = np.ones((num_types,), dtype=np.float64)/num_types
     K = 4
     for ell in range(1):
-        example = RandomExampleFullyHet(sspa_size, aspa_size, max_N, K, "dirichlet", [1])
-        save_path = "examples/uniform-S{}A{}N{}K{}fh-{}".format(sspa_size, aspa_size, max_N, K, ell)
+        # example = RandomExampleFullyHet(sspa_size, aspa_size, max_N, K, "dirichlet", [1])
+        example = RandomExampleTypedHet(sspa_size, aspa_size, nominal_type_frac, K, "dirichlet", [1])
+        save_path = "examples/uniform-S{}A{}types{}K{}-{}".format(sspa_size, aspa_size, num_types, K, ell)
         print("saving to: ", save_path)
         if os.path.exists(save_path):
             pass

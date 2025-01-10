@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.WARNING)
 
 
 class SingleArmAnalyzer(object):
-    def __init__(self, sspa_size, aspa_size, N, trans_tensor, reward_tensor, K, cost_tensor_list, alpha_list):
+    def __init__(self, sspa_size, aspa_size, N, type_fracs, trans_tensor, reward_tensor, K, cost_tensor_list, alpha_list):
         self.sspa_size = sspa_size
         self.sspa = np.array(list(range(self.sspa_size)), dtype=int)
         self.aspa_size = aspa_size
@@ -26,6 +26,8 @@ class SingleArmAnalyzer(object):
             for a in self.aspa:
                 self.sa_pairs.append((s, a))
         self.N = N
+        self.num_types = len(type_fracs)
+        self.type_fracs = type_fracs # fraction of arms of each type (true fraction, s.t. type_fracs[j]*N is integer)
         self.trans_tensor = trans_tensor
         self.reward_tensor = reward_tensor
         self.K = K
@@ -34,17 +36,20 @@ class SingleArmAnalyzer(object):
         # any numbers smaller than self.EPS are regard as zero
         self.EPS = 1e-8
         # check dimensions
-        assert self.trans_tensor.shape[0] == N
-        assert self.reward_tensor.shape[0] == N
+        assert self.N >= self.num_types
+        assert len(self.type_fracs.shape) == 1
+        assert self.trans_tensor.shape == (self.num_types, sspa_size, aspa_size, sspa_size)
+        assert self.reward_tensor.shape == (self.num_types, sspa_size, aspa_size)
         for k in range(K):
-            assert self.cost_tensor_list[k].shape[0] == N
+            assert self.cost_tensor_list[k].shape == (self.num_types, sspa_size, aspa_size)
+            assert (type(self.alpha_list[k]) == float) or (len(self.alpha_list[k].shape) == 0)
 
         # two parameters used in reassignment
         self.cmax = np.max(np.array(self.cost_tensor_list))
         self.alphamin = np.min(np.array(alpha_list))
 
         # variables
-        self.y = cp.Variable((N, self.sspa_size, self.aspa_size))
+        self.y = cp.Variable((self.num_types, self.sspa_size, self.aspa_size))
         # self.dualvars = cp.Parameter((K,), name="dualvar")  # the subsidy parameter for solving Whittle's index policy
 
         # store some data of the solution, only needed for solving the LP-Priority policy
@@ -61,10 +66,10 @@ class SingleArmAnalyzer(object):
 
     def get_stationary_constraints(self):
         stationary_constrs = []
-        for i in range(self.N):
+        for j in range(self.num_types):
             for cur_s in self.sspa:
-                mu_s = cp.sum(cp.multiply(self.y[i,:,:], self.trans_tensor[i,:,:,cur_s]))
-                stationary_constrs.append(mu_s == cp.sum(self.y[i, cur_s, :]))
+                mu_s = cp.sum(cp.multiply(self.y[j,:,:], self.trans_tensor[j,:,:,cur_s]))
+                stationary_constrs.append(mu_s == cp.sum(self.y[j, cur_s, :]))
         return stationary_constrs
 
     def get_budget_constraints(self):
@@ -72,7 +77,8 @@ class SingleArmAnalyzer(object):
         for k in range(self.K):
             cost_tensor = self.cost_tensor_list[k]
             alpha = self.alpha_list[k]
-            budget_constrs.append(cp.sum(cp.multiply(self.y, cost_tensor)) <= alpha*self.N)
+            cost_vec = cp.sum(cp.multiply(self.y, cost_tensor), axis=(1,2))
+            budget_constrs.append(self.type_fracs @ cost_vec <= alpha)
         return budget_constrs
 
     def get_basic_constraints(self):
@@ -83,7 +89,8 @@ class SingleArmAnalyzer(object):
         return basic_constrs
 
     def get_objective(self):
-        objective = cp.Maximize(cp.sum(cp.multiply(self.y, self.reward_tensor))/self.N)
+        reward_vec = cp.sum(cp.multiply(self.y, self.reward_tensor), axis=(1,2))
+        objective = cp.Maximize(self.type_fracs @ reward_vec)
         return objective
 
     def solve_lp(self):
@@ -96,37 +103,37 @@ class SingleArmAnalyzer(object):
         y = y * (y>=0)
         y = y / np.sum(y, axis=(1,2), keepdims=True)
         self.state_probs = np.sum(y, axis=2)
-        self.policies = np.zeros((self.N, self.sspa_size, self.aspa_size))
-        for i in range(self.N):
+        self.policies = np.zeros((self.num_types, self.sspa_size, self.aspa_size,))
+        for j in range(self.num_types):
             for s in self.sspa:
-                if self.state_probs[i, s] > self.EPS:
-                    self.policies[i, s, :] = y[i, s, :] / self.state_probs[i, s]
+                if self.state_probs[j, s] > self.EPS:
+                    self.policies[j, s, :] = y[j, s, :] / self.state_probs[j, s]
                 else:
-                    self.policies[i, s, :] = 1 / self.aspa_size
-        self.Ps = np.zeros((self.N, self.sspa_size, self.sspa_size,))
-        for i in range(self.N):
+                    self.policies[j, s, :] = 1 / self.aspa_size
+        self.Ps = np.zeros((self.num_types, self.sspa_size, self.sspa_size,))
+        for j in range(self.num_types):
             for a in self.aspa:
-                self.Ps[i,:,:] += self.trans_tensor[i,:,a,:]*np.expand_dims(self.policies[i,:,a], axis=1)
+                self.Ps[j,:,:] += self.trans_tensor[j,:,a,:]*np.expand_dims(self.policies[j,:,a], axis=1)
         return self.opt_value, y
 
-    def print_LP_solution(self, arm_id):
+    def print_LP_solution(self, arm_type):
         """
         :param arm_id: the ID of the arm whose LP solution you want to print; if arm_id == -1, print the average
         """
-        if arm_id >= 0:
-            yi = self.y.value[arm_id,:,:]
-        elif arm_id == -1:
-            yi = np.sum(self.y.value, axis=0)
+        if arm_type >= 0:
+            yj = self.y.value[arm_type,:,:]
+        elif arm_type == -1:
+            yj = np.sum(self.y.value * np.expand_dims(self.type_fracs, axis=(1,2)), axis=0)
         else:
             raise NotImplementedError
-        print("--------The solution of the {}-th arm-------".format(arm_id))
-        print("Expected reward: ", yi*self.reward_tensor[arm_id,:,:])
+        print("--------The solution of the {}-th arm-------".format(arm_type))
+        print("Expected reward: ", np.sum(yj*self.reward_tensor[arm_type,:,:]))
         for k in range(self.K):
-            print("Expected type-{} cost: ", yi*self.cost_tensor_list[k][arm_id,:,:])
+            print("Expected type-{} cost: ".format(k), np.sum(yj*self.cost_tensor_list[k][arm_type,:,:]))
         print("Optimal var")
-        print(yi)
-        print("Optimal state frequency=", self.state_probs[arm_id,:])
-        print("Single armed policy=", self.policies[arm_id,:,:])
+        print(yj)
+        print("Optimal state frequency=", self.state_probs[arm_type,:])
+        print("Single armed policy=", self.policies[arm_type,:,:])
         print("---------------------------")
 
 
@@ -139,7 +146,7 @@ class SingleArmAnalyzer(object):
         plt.legend()
         plt.savefig("cost_slopes.png")
         plt.close()
-            
+
 
     def reassign_ID(self, method):
         """
@@ -168,15 +175,30 @@ class SingleArmAnalyzer(object):
             self.plot_cost_slopes(exp_cost_table[:,new_orders])
             return new_orders
         elif method == "intervals":
+            # arrange each type of arms sequentially, and map from type to IDs
+            type2ids_table = np.zeros((self.num_types, self.N))
+            type_frac_partial_sums = np.zeros((self.num_types))
+            for j in range(self.num_types):
+                if j == 0:
+                    type_frac_partial_sums[j] = self.type_fracs[j]
+                else:
+                    type_frac_partial_sums[j] = type_frac_partial_sums[j-1] + self.type_fracs[j]
+            for j in range(self.num_types):
+                start_id = int(round(type_frac_partial_sums[j-1])) if j >= 1 else 0
+                end_id = int(round(type_frac_partial_sums[j]))
+                type2ids_table[j][start_id:end_id] = 1
+            # generate a table summarizing the expected cost of each arm
             exp_cost_table = np.zeros((self.K, self.N,))
             for k in range(self.K):
                 for i in range(self.N):
-                    exp_cost_table[k,i] = np.dot(self.cost_tensor_list[k][i,:,:].flatten(), self.y.value[i,:,:].flatten())
+                    i_type = np.where(type2ids_table[:,i] == 0)[0]
+                    exp_cost_table[k,i] = np.dot(self.cost_tensor_list[k][i_type,:,:].flatten(), self.y.value[i_type,:,:].flatten())
             active_constrs = np.sum(exp_cost_table, axis=1) >= (0.5*np.array(self.alpha_list)*self.N)
             logging.debug("active constraints = {}".format(active_constrs))
             self.plot_cost_slopes(exp_cost_table)
-            # solve cost_thresh from a qaudratic equation to optimize the cost sloe
-            # coefficients of a quadratic 
+
+            # solve cost_thresh from a quadratic equation to optimize the cost slope
+            # coefficients of a quadratic function
             co_a = 2*self.K - 1
             co_b = 0.5*self.alphamin - 2*self.K*self.cmax - 0.5*self.alphamin*self.K
             co_c = 0.5*self.alphamin*self.cmax*self.K
@@ -216,7 +238,7 @@ class SingleArmAnalyzer(object):
             self.plot_cost_slopes(exp_cost_table[:,new_orders])
             return new_orders
 
-                    
+
             # non_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0) == 0)[0])
             # points_to_next_costly = np.zeros((self.K,), dtype=int) # pointers to the smallest-index arm whose type-k cost is larger than the threshold
             # for k in range(self.K):
@@ -272,7 +294,7 @@ class SingleArmAnalyzer(object):
             # intv_len_1 = int(np.ceil(nominal_intv_len))
             # num_intvs = int(np.floor(self.N / intv_len_1))
             # intv_len_2 = intv_len_1 - 1
-            # num_len_1_intv = self.N - num_intvs * intv_len_2 # todo: there could be num_len_1_intv > num_intvs
+            # num_len_1_intv = self.N - num_intvs * intv_len_2
             # assert num_len_1_intv * intv_len_1 + (num_intvs - num_len_1_intv) * intv_len_2 == self.N
             # logging.debug("num_len_1_intv={}, intv_len_1={}, intv_len_2={}".format(num_len_1_intv, intv_len_1, intv_len_2))
             # logging.debug("costly group lengths = {}".format([len(group) for group in costly_groups]))
@@ -321,26 +343,35 @@ class WCMDP(object):
     :param trans_tensor: n-d vector with dims=(N, sspa_size, aspa_size, sspa_size) and dtype=float
     note that the cost constraint is not encoded in this class
     """
-    def __init__(self, sspa_size, aspa_size, N, trans_tensor, reward_tensor, init_states=None):
+    def __init__(self, sspa_size, aspa_size, N, trans_tensor, reward_tensor, id2types, init_states=None):
         self.sspa_size = sspa_size
         self.sspa = np.array(list(range(self.sspa_size)), dtype=int)
         self.aspa_size = aspa_size
         self.aspa = np.array(list(range(self.aspa_size)), dtype=int)
-        self.sa_pairs = []
-        for s in self.sspa:
-            for a in self.aspa:
-                self.sa_pairs.append((s, a))
         self.N = N
+        self.num_types = trans_tensor.shape[0] #len(type_fracs)
+        # self.type_fracs = type_fracs
         self.trans_tensor = trans_tensor
         self.reward_tensor = reward_tensor
+        self.id2types = id2types.copy()
         # initialize the state of the arms at 0
         if init_states is not None:
+            assert init_states.shape == (self.N,)
             self.states = init_states.copy()
         else:
             self.states = np.zeros((self.N,))
         # check the dimensions
-        assert self.reward_tensor.shape == (self.N, self.sspa_size, self.aspa_size)
-        assert self.trans_tensor.shape == (self.N, self.sspa_size, self.aspa_size, self.sspa_size)
+        # assert len(self.type_fracs.shape) == 1
+        assert self.reward_tensor.shape == (self.num_types, self.sspa_size, self.aspa_size)
+        assert self.trans_tensor.shape == (self.num_types, self.sspa_size, self.aspa_size, self.sspa_size)
+        assert self.id2types.shape == (self.N,)
+
+        # precompute possible combinations of type, state and actions
+        self.tsa_tuples = [] #type, state, action
+        for t_ind in range(self.num_types):
+            for s in self.sspa:
+                for a in self.aspa:
+                    self.tsa_tuples.append((t_ind, s, a))
 
     def get_states(self):
         return self.states.copy()
@@ -350,14 +381,30 @@ class WCMDP(object):
         :param actions: a 1-d array with length N. Each entry is an int in the range [0,self.aspa-1], denoting the action of each arm
         :return: intantaneous reward of this time step
         """
-        instant_reward = 0
-        for i in range(self.N):
-            cur_s = self.states[i]
-            cur_a = actions[i]
-            instant_reward += self.reward_tensor[i, cur_s, cur_a]
-            self.states[i] = np.random.choice(self.sspa, 1, p=self.trans_tensor[i, cur_s, cur_a, :])
-        instant_reward = instant_reward / self.N  # we normalize it by the number of arms
-        return instant_reward
+        # choose a more efficient way to compute
+        if self.N > self.num_types * self.sspa_size * self.aspa_size:
+            logging.debug("using typed het update method")
+            tsa2indices = {} # each key is a tuple (type, state, action), whose value is the list of indices of such arms
+            # find out the arms whose (state, action) = sa_pair
+            for tsa in self.tsa_tuples:
+                tsa2indices[tsa] = np.where(np.all([self.id2types == tsa[0], self.states == tsa[1], actions == tsa[2]], axis=0))[0]
+            instant_reward = 0
+            for tsa in self.tsa_tuples:
+                next_states = np.random.choice(self.sspa, len(tsa2indices[tsa]), p=self.trans_tensor[tsa[0], tsa[1], tsa[2],:])
+                self.states[tsa2indices[tsa]] = next_states
+                instant_reward += self.reward_tensor[tsa[0], tsa[1], tsa[2]] * len(tsa2indices[tsa])
+            instant_reward = instant_reward / self.N  # normalize the total reward by the number of arms
+            return instant_reward
+        else:
+            logging.debug("using fully het update method")
+            instant_reward = 0
+            for i in range(self.N):
+                cur_s = self.states[i]
+                cur_a = actions[i]
+                instant_reward += self.reward_tensor[self.id2types[i], cur_s, cur_a]
+                self.states[i] = np.random.choice(self.sspa, 1, p=self.trans_tensor[self.id2types[i], cur_s, cur_a, :])
+            instant_reward = instant_reward / self.N  # normalize by the number of arms
+            return instant_reward
 
     def check_budget_constraints(self):
         pass
@@ -389,6 +436,7 @@ class IDPolicy(object):
                 self.sa_pairs.append((s, a))
         self.N = N
         self.policies = policies
+        self.num_types = self.policies.shape[0]
         self.K = K
         self.cost_tensor_list = cost_tensor_list
         self.alpha_list = alpha_list
@@ -397,36 +445,49 @@ class IDPolicy(object):
 
         # check the dimensions
         for cost_tensor in cost_tensor_list:
-            assert cost_tensor.shape == (self.N, self.sspa_size, self.aspa_size)
+            assert cost_tensor.shape == (self.num_types, self.sspa_size, self.aspa_size)
         for alpha in self.alpha_list:
-            assert len(alpha.shape) == 0
+            assert (type(alpha) == float) or (len(alpha.shape) == 0)
         # check that the single-armed policy is a valid set of conditional distributions
-        if not np.allclose(np.sum(self.policies, axis=2), np.ones((self.N, self.sspa_size)), atol=1e-4):
+        if not np.allclose(np.sum(self.policies, axis=2), np.ones((self.num_types, self.sspa_size)), atol=1e-4):
             print("policy definition wrong, the action probs do not sum up to 1. The wrong arms and policies are")
-            for i in range(self.N):
-                if not np.allclose(np.sum(self.policies[i,:,:], axis=1), np.ones((self.sspa_size,)), atol=1e-4):
-                    print("i={}, pibar_i={}".format(i, self.policies[i,:,:]))
+            for j in range(self.num_types):
+                if not np.allclose(np.sum(self.policies[j,:,:], axis=1), np.ones((self.sspa_size,)), atol=1e-4):
+                    print("j={}, pibar_j={}".format(j, self.policies[j,:,:]))
             raise ValueError
 
-    def get_actions(self, cur_states):
+        # precompute possible combinations of type and states
+        self.ts_pairs = []
+        for t_ind in range(self.num_types):
+            for s in self.sspa:
+                self.ts_pairs.append((t_ind, s))
+
+    def get_actions(self, id2types, cur_states):
         """
+        :param id2types: length-N list of integers, each denoting the type of the n-th arm
         :param cur_states: the current states of the arms
         :return: the actions taken by the arms under the policy
         """
         # randomly sample actions using the single-armed policies
         actions = np.zeros((self.N,), dtype=int)
-        for i in range(self.N):
-            actions[i] = np.random.choice(self.aspa, size=1, p=self.policies[i,cur_states[i],:])
+        # choose a more efficient way to sample the ideal actions
+        if self.N > self.num_types * self.sspa_size * self.aspa_size:
+            for ts in self.ts_pairs:
+                cur_ts_indices =  np.where(np.all([id2types==ts[0], cur_states==ts[1]], axis=0))[0]
+                actions[cur_ts_indices] = np.random.choice(self.aspa, size=len(cur_ts_indices), p=self.policies[ts[0], ts[1],:])
+        else:
+            for i in range(self.N):
+                actions[i] = np.random.choice(self.aspa, size=1, p=self.policies[id2types[i], cur_states[i], :])
 
         # permute the states according to self.permuted_orders
         permuted_states = cur_states[self.permuted_orders]
         permuted_actions = actions[self.permuted_orders]
 
-        # compute partial sums of cost consumption under the permuted ID
+        # compute partial sums of cost consumption under the permuted IDs
         cost_partial_sum_table = np.zeros((self.K, self.N,))
         for k in range(self.K):
-            # permute the cost tensor according to the new IDs
-            permuted_cost_tensor = self.cost_tensor_list[k][self.permuted_orders,:,:]
+            types_under_permuted_orders = id2types[self.permuted_orders]
+            permuted_cost_tensor = self.cost_tensor_list[k][types_under_permuted_orders,:,:] # a tensor of shape (N,S,A)
             for i in range(self.N):
                 if i == 0:
                     cost_partial_sum_table[k,i] = permuted_cost_tensor[i, permuted_states[i], permuted_actions[i]]
@@ -443,7 +504,8 @@ class IDPolicy(object):
 
         # checking budget conformity
         for k in range(self.K):
-            permuted_cost_tensor = self.cost_tensor_list[k][self.permuted_orders,:,:]
+            types_under_permuted_orders = id2types[self.permuted_orders]
+            permuted_cost_tensor = self.cost_tensor_list[k][types_under_permuted_orders,:,:]
             assert sum([permuted_cost_tensor[i, permuted_states[i], permuted_actions[i]] for i in range(self.N)]) <= budget_vec[k], "{}-th cost exceeds budget"
 
         # map the change back to the actions in the original order
