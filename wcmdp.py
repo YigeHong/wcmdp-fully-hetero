@@ -167,14 +167,14 @@ class SingleArmAnalyzer(object):
                 else:
                     type_frac_partial_sums[j] = type_frac_partial_sums[j-1] + self.type_fracs[j]
             for j in range(self.num_types):
-                start_id = int(round(type_frac_partial_sums[j-1])) if j >= 1 else 0
-                end_id = int(round(type_frac_partial_sums[j]))
+                start_id = int(round(type_frac_partial_sums[j-1] * self.N)) if j >= 1 else 0
+                end_id = int(round(type_frac_partial_sums[j] * self.N))
                 type2ids_table[j][start_id:end_id] = 1
             # generate a table summarizing the expected cost of each arm
             exp_cost_table = np.zeros((self.K, self.N,))
             for k in range(self.K):
                 for i in range(self.N):
-                    i_type = np.where(type2ids_table[:,i] == 0)[0]
+                    i_type = np.where(type2ids_table[:,i] == 1)[0]
                     exp_cost_table[k,i] = np.dot(self.cost_tensor_list[k][i_type,:,:].flatten(), self.y.value[i_type,:,:].flatten())
             active_constrs = np.sum(exp_cost_table, axis=1) >= (0.5*np.array(self.alpha_list)*self.N)
             logging.debug("active constraints = {}".format(active_constrs))
