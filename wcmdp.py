@@ -55,10 +55,10 @@ class SingleArmAnalyzer(object):
         # store some data of the solution, only needed for solving the LP-Priority policy
         # the values might change, so they are not safe to use unless immediately after solving the LP.
         self.opt_value = None
-        self.avg_rewards = np.zeros((self.num_types,))
-        self.opt_subsidy = None
-        self.value_func_relaxed = np.zeros((self.num_types, self.sspa_size,))
-        self.q_func_relaxed = np.zeros((self.num_types, self.sspa_size, self.aspa_size))
+        # self.avg_rewards = np.zeros((self.num_types,))
+        # self.opt_subsidy = None
+        # self.value_func_relaxed = np.zeros((self.num_types, self.sspa_size,))
+        # self.q_func_relaxed = np.zeros((self.num_types, self.sspa_size, self.aspa_size))
 
         self.state_probs = None  # optimal state frequency for each arm, ndarray, dims=(N, sspa), dtype=float
         self.policies = None  # optimal single-armed policies for each arm, ndarray, dims=(N, sspa, aspa), dtype=float
@@ -248,43 +248,45 @@ class SingleArmAnalyzer(object):
         # for ell in range(len(constrs)):
         #     print("The {}-th dual variable is {}".format(ell, constrs[ell].dual_value))
 
-        # get value function from the dual variables. Later we should rewrite the dual problem explicitly
-        # average reward is the dual variable of "sum to 1" constraint
-        self.avg_rewards[:] = constrs[-1].dual_value     # the sign is positive; DO NOT CHANGE IT
-        for j in range(self.num_types):
-            for cur_s in range(self.sspa_size):
-                # value function is the dual of stationary constraint
-                self.value_func_relaxed[j,cur_s] = - constrs[j*self.sspa_size+cur_s].dual_value   # the sign is negative; DO NOT CHANGE IT
+        # # get value function from the dual variables. Later we should rewrite the dual problem explicitly
+        # # average reward is the dual variable of "sum to 1" constraint
+        # self.avg_rewards[:] = constrs[-1].dual_value     # the sign is positive; DO NOT CHANGE IT
+        # for j in range(self.num_types):
+        #     for cur_s in range(self.sspa_size):
+        #         # value function is the dual of stationary constraint
+        #         self.value_func_relaxed[j,cur_s] = - constrs[j*self.sspa_size+cur_s].dual_value   # the sign is negative; DO NOT CHANGE IT
+        #
+        # # optimal subsidy for passive actions is the dual of the budget constraint
+        # self.opt_subsidy = constrs[self.num_types*self.sspa_size].dual_value   # the sign is positive; do not change it
+        #
+        # if verbose:
+        #     print("---solving LP Priority----")
+        #     print("lambda* = ", self.opt_subsidy)
+        #     print("avg_rewards = ", self.avg_rewards)
+        #     print("value_func = ", self.value_func_relaxed)
+        #
+        # for j in range(self.num_types):
+        #     for cur_s in range(self.sspa_size):
+        #         for cur_a in range(self.aspa_size):
+        #             self.q_func_relaxed[j, cur_s, cur_a] = self.reward_tensor[j, cur_s, cur_a]*self.type_fracs[j] \
+        #                                                    + self.opt_subsidy * (cur_a==0)*self.type_fracs[j] - self.avg_rewards[j] \
+        #                                                    + np.sum(self.trans_tensor[j, cur_s, cur_a, :] * self.value_func_relaxed[j,:])
+        # if verbose:
+        #     print("q func = ", self.q_func_relaxed)
+        #     print("action gap =  ", self.q_func_relaxed[:,:,1] - self.q_func_relaxed[:,:,0])
+        #     print("---------------------------")
 
-        # optimal subsidy for passive actions is the dual of the budget constraint
-        self.opt_subsidy = constrs[self.num_types*self.sspa_size].dual_value   # the sign is positive; do not change it
-
-        if verbose:
-            print("---solving LP Priority----")
-            print("lambda* = ", self.opt_subsidy)
-            print("avg_rewards = ", self.avg_rewards)
-            print("value_func = ", self.value_func_relaxed)
-
-        for j in range(self.num_types):
-            for cur_s in range(self.sspa_size):
-                for cur_a in range(self.aspa_size):
-                    self.q_func_relaxed[j, cur_s, cur_a] = self.reward_tensor[j, cur_s, cur_a]*self.type_fracs[j] \
-                                                           + self.opt_subsidy * (cur_a==0)*self.type_fracs[j] - self.avg_rewards[j] \
-                                                           + np.sum(self.trans_tensor[j, cur_s, cur_a, :] * self.value_func_relaxed[j,:])
-        if verbose:
-            print("q func = ", self.q_func_relaxed)
-            print("action gap =  ", self.q_func_relaxed[:,:,1] - self.q_func_relaxed[:,:,0])
-            print("---------------------------")
+        dual_vars_of_non_neg = constrs[-2].dual_value
 
         type_state_to_action_gap = []
         for j in range(self.num_types):
             for cur_s in range(self.sspa_size):
-                action_gap = self.q_func_relaxed[j,cur_s,1] - self.q_func_relaxed[j,cur_s,0]
+                action_gap = dual_vars_of_non_neg[j,cur_s,0] - dual_vars_of_non_neg[j,cur_s,1]
                 type_state_to_action_gap.append((j, cur_s, action_gap))
         type_state_to_action_gap.sort(key=lambda tp:tp[2], reverse=True) # sort by action gap in the descending order
-        logging.debug("Action gap, y value, gap from dual var of y>=0:")
+        logging.debug("y value, action gap computed from dual var of y>=0:")
         for tp in type_state_to_action_gap:
-            logging.debug("({},{})".format(tp[0], tp[1]), tp[2], self.y.value[tp[0], tp[1],:], constrs[-2].dual_value[tp[0], tp[1], 0] - constrs[-2].dual_value[tp[0], tp[1], 1])
+            logging.debug("({},{})".format(tp[0], tp[1]), tp[2], self.y.value[tp[0], tp[1],:])
         priority_list = [(tp[0], tp[1]) for tp in type_state_to_action_gap]
         return priority_list
 
