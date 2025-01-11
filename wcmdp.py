@@ -55,10 +55,10 @@ class SingleArmAnalyzer(object):
         # store some data of the solution, only needed for solving the LP-Priority policy
         # the values might change, so they are not safe to use unless immediately after solving the LP.
         self.opt_value = None
-        # self.avg_reward = None
-        # self.opt_subsidy = None
-        # self.value_func_relaxed = np.zeros((self.sspa_size,))
-        # self.q_func_relaxed = np.zeros((self.sspa_size, 2))
+        self.avg_rewards = np.zeros((self.num_types,))
+        self.opt_subsidy = None
+        self.value_func_relaxed = np.zeros((self.num_types, self.sspa_size,))
+        self.q_func_relaxed = np.zeros((self.num_types, self.sspa_size, self.aspa_size))
 
         self.state_probs = None  # optimal state frequency for each arm, ndarray, dims=(N, sspa), dtype=float
         self.policies = None  # optimal single-armed policies for each arm, ndarray, dims=(N, sspa, aspa), dtype=float
@@ -196,15 +196,15 @@ class SingleArmAnalyzer(object):
                 co_c = 0.5*self.alphamin*self.cmax*self.K
                 cost_thresh = (-co_b - np.sqrt(co_b**2 - 4*co_a*co_c)) / (2*co_a)
                 # nominal_intv_len = self.K * (self.cmax - cost_thresh) / (0.5*self.alphamin - cost_thresh)
-                rem_costly_arms_table = exp_cost_table >= cost_thresh
-                num_costly_arms = np.sum(rem_costly_arms_table, axis=1)
+                costly_arms_table = exp_cost_table >= cost_thresh
+                num_costly_arms = np.sum(costly_arms_table, axis=1)
                 nominal_intv_len = self.K * self.N / np.min(num_costly_arms)
                 logging.debug("cost_thresh={}, nominal_intv_len={}".format(cost_thresh, nominal_intv_len))
                 if nominal_intv_len > self.N:
                     nominal_intv_len = self.N
 
-                rem_costly_arms_table = exp_cost_table >= cost_thresh
-                logging.debug("rem_costly_arms_table=\n{}".format(rem_costly_arms_table))
+                costly_arms_table = exp_cost_table >= cost_thresh
+                logging.debug("costly_arms_table=\n{}".format(costly_arms_table))
                 intv_len = int(np.ceil(nominal_intv_len))
                 num_intervals = int(np.floor(self.N / intv_len))
                 used_arms = np.zeros((self.N,), dtype=int)
@@ -212,10 +212,11 @@ class SingleArmAnalyzer(object):
                 for interval in range(num_intervals):
                     cur = interval * intv_len
                     for k in range(self.K):
-                        k_cost_interval_sum = np.sum(exp_cost_table[k,i] for i in range(self.N) if new_orders[i] >= interval*intv_len and new_orders[i] < (interval+1)*intv_len)
+                        k_cost_interval_sum = np.sum([exp_cost_table[k,i] for i in range(self.N)
+                                                      if (new_orders[i] >= interval*intv_len) and (new_orders[i] < (interval+1)*intv_len)])
                         if k_cost_interval_sum < cost_thresh:
                             for i in range(self.N):
-                                if used_arms[i] == 0 and rem_costly_arms_table[k,i] == 1:
+                                if used_arms[i] == 0 and costly_arms_table[k,i] == 1:
                                     new_orders[cur] = i    ## check whether new_orders[i] = cur or reverse
                                     used_arms[i] = 1
                                     cur += 1
@@ -232,101 +233,58 @@ class SingleArmAnalyzer(object):
             else:
                 raise NotImplementedError
 
-            # non_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0) == 0)[0])
-            # points_to_next_costly = np.zeros((self.K,), dtype=int) # pointers to the smallest-index arm whose type-k cost is larger than the threshold
-            # for k in range(self.K):
-            #     if active_constrs[k] == 1:
-            #         type_k_costly = np.where(rem_costly_arms_table[k,:]>0)[0]
-            #         # type_k_costly must be non-empty if the k-th budget contraint is active
-            #         points_to_next_costly[k] = np.min(type_k_costly) #if len(type_k_costly) > 0 else self.N
-            #     else:
-            #         points_to_next_costly[k] = self.N
-            # costly_groups = [] # groups of arms; the total type-k cost of each group will be larger than cost_thresh, for each k
-            # rem_arms_list = []
-            # while True:
-            #     # each outer loop creates a group of costly arms
-            #     costly_groups.append([])
-            #     fulfilled_cost_types = np.zeros((self.K,))
-            #     for k in range(self.K):
-            #         if fulfilled_cost_types[k] == 0:
-            #             # find the next arm to add
-            #             arm_to_add = points_to_next_costly[k]
-            #             if arm_to_add >= self.N:
-            #                 continue
-            #             assert rem_costly_arms_table[k,arm_to_add] > 0 # temporary, check correctness of the code
-            #             # add the arm, update tables
-            #             costly_groups[-1].append(arm_to_add)
-            #             fulfilled_cost_types += rem_costly_arms_table[:,arm_to_add]
-            #             rem_costly_arms_table[:,arm_to_add] = 0
-            #             # for each cost type k, find the next costly arm that hasn't been added into the groups
-            #             for _k in range(self.K):
-            #                 new_pointer = points_to_next_costly[_k]
-            #                 while (new_pointer < self.N) and (rem_costly_arms_table[_k, new_pointer] == 0):
-            #                     new_pointer += 1
-            #                 points_to_next_costly[_k] = new_pointer
-            #         else:
-            #             continue
-            #     logging.debug(points_to_next_costly)
-            #     if np.any((points_to_next_costly >= self.N) * active_constrs):
-            #         if np.any((fulfilled_cost_types == 0) * active_constrs):
-            #             # if the cost of last group is not fulfilled, remove from the groups, and add them into the remaining arms
-            #             unfulfilled_group = costly_groups.pop()
-            #             rem_arms_list.extend(unfulfilled_group)
-            #         # merge the costly arms that are not added into the groups into non_costly_arms_list
-            #         rem_costly_arms_list = list(np.where(np.sum(rem_costly_arms_table, axis=0)>0)[0])
-            #         rem_arms_list.extend(rem_costly_arms_list)
-            #         rem_arms_list.extend(non_costly_arms_list)
-            #         logging.debug("number of arms in costly groups={}, rem_costly_arms_list={}, non_costly_arms_list={}".format(
-            #                 sum([len(group) for group in costly_groups]), len(rem_costly_arms_list), len(non_costly_arms_list)))
+    def solve_LP_Priority(self, verbose=False):
+        """
+        we should only use it for restless bandits, but we allow it to be heterogeneous.
+        """
+        assert self.K == 1
+        assert self.aspa_size == 2
 
-            #         break
-            # logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
-            #     sum([len(group) for group in costly_groups]), len(rem_arms_list)))
+        objective = self.get_objective()
+        constrs = self.get_stationary_constraints() + self.get_budget_constraints() + self.get_basic_constraints()
+        problem = cp.Problem(objective, constrs)
+        problem.solve(verbose=False)
 
-            # # calculate the total number of intervals of each length
-            # intv_len_1 = int(np.ceil(nominal_intv_len))
-            # num_intvs = int(np.floor(self.N / intv_len_1))
-            # intv_len_2 = intv_len_1 - 1
-            # num_len_1_intv = self.N - num_intvs * intv_len_2
-            # assert num_len_1_intv * intv_len_1 + (num_intvs - num_len_1_intv) * intv_len_2 == self.N
-            # logging.debug("num_len_1_intv={}, intv_len_1={}, intv_len_2={}".format(num_len_1_intv, intv_len_1, intv_len_2))
-            # logging.debug("costly group lengths = {}".format([len(group) for group in costly_groups]))
-            # # merge the extra groups into remaining arms
-            # for group in costly_groups[num_intvs:]:
-            #     rem_arms_list.extend(group)
-            # costly_groups = costly_groups[0:num_intvs]
-            # np.random.shuffle(rem_arms_list)
-            # logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
-            #     sum([len(group) for group in costly_groups]), len(rem_arms_list)))
-            # # combine the costly arm groups and the remaining arms into intervals of the lengths specified above
-            # rem_arms_pt = 0
-            # for ell in range(num_intvs):
-            #     num_exist = len(costly_groups[ell])
-            #     num_to_add = intv_len_1-num_exist if ell < num_len_1_intv else intv_len_2-num_exist
-            #     assert num_to_add >= 0
-            #     arms_to_add = rem_arms_list[rem_arms_pt:(rem_arms_pt+num_to_add)]
-            #     costly_groups[ell].extend(arms_to_add)
-            #     rem_arms_pt += num_to_add
-            # logging.debug("number of arms in costly groups={}, remaining number of arms={}".format(
-            #     sum([len(group) for group in costly_groups]), len(rem_arms_list)))
+        # for ell in range(len(constrs)):
+        #     print("The {}-th dual variable is {}".format(ell, constrs[ell].dual_value))
 
-            # new_orders = functools.reduce(operator.iconcat, costly_groups, [])
-            # new_orders = np.array(new_orders)
+        # get value function from the dual variables. Later we should rewrite the dual problem explicitly
+        # average reward is the dual variable of "sum to 1" constraint
+        self.avg_rewards[:] = constrs[-1].dual_value     # the sign is positive; DO NOT CHANGE IT
+        for j in range(self.num_types):
+            for cur_s in range(self.sspa_size):
+                # value function is the dual of stationary constraint
+                self.value_func_relaxed[j,cur_s] = - constrs[j*self.sspa_size+cur_s].dual_value   # the sign is negative; DO NOT CHANGE IT
 
-            # assert np.allclose(np.sort(new_orders), np.arange(self.N, dtype=int))
-            # for k in range(self.K):
-            #     if active_constrs[k] == 1:
-            #         temp_pt = 0
-            #         for ell in range(num_intvs):
-            #             intv_len = intv_len_1 if ell < num_len_1_intv else intv_len_2
-            #             cur_interval_exp_cost =  sum([exp_cost_table[k,i] for i in new_orders[ell:(ell+intv_len)]])
-            #             logging.debug("cur_interval_exp_cost={}".format(cur_interval_exp_cost))
-            #             assert cur_interval_exp_cost>= cost_thresh, \
-            #                 "{}-th interval violates type-{} cost-slope require requirement: actual expected cost= {} < cost threshold = {};" \
-            #                 " involving arms with old {}".format(ell, k, cur_interval_exp_cost, cost_thresh, new_orders[ell:(ell+intv_len)])
-            #             temp_pt += intv_len
+        # optimal subsidy for passive actions is the dual of the budget constraint
+        self.opt_subsidy = constrs[self.num_types*self.sspa_size].dual_value   # the sign is positive; do not change it
 
-            # return new_orders
+        if verbose:
+            print("---solving LP Priority----")
+            print("lambda* = ", self.opt_subsidy)
+            print("avg_rewards = ", self.avg_rewards)
+            print("value_func = ", self.value_func_relaxed)
+
+        for j in range(self.num_types):
+            for cur_s in range(self.sspa_size):
+                for cur_a in range(self.aspa_size):
+                    self.q_func_relaxed[j, cur_s, cur_a] = self.reward_tensor[j, cur_s, cur_a] \
+                                                           + self.opt_subsidy * (cur_a==0) - self.avg_rewards[j] \
+                                                           + np.sum(self.trans_tensor[j, cur_s, cur_a, :] * self.value_func_relaxed[j,:])
+        if verbose:
+            print("q func = ", self.q_func_relaxed)
+            print("action gap =  ", self.q_func_relaxed[:,:,1] - self.q_func_relaxed[:,:,0])
+            print("---------------------------")
+
+        type_state_to_action_gap = []
+        for j in range(self.num_types):
+            for cur_s in range(self.sspa_size):
+                action_gap = self.q_func_relaxed[j,cur_s,1] - self.q_func_relaxed[j,cur_s,0]
+                type_state_to_action_gap.append((j, cur_s, action_gap))
+        type_state_to_action_gap.sort(key=lambda tp:tp[2], reverse=True) # sort by action gap in the descending order
+        priority_list = [(tp[0], tp[1]) for tp in type_state_to_action_gap]
+        return priority_list
+
 
 class WCMDP(object):
     """
@@ -339,8 +297,7 @@ class WCMDP(object):
         self.aspa_size = aspa_size
         self.aspa = np.array(list(range(self.aspa_size)), dtype=int)
         self.N = N
-        self.num_types = trans_tensor.shape[0] #len(type_fracs)
-        # self.type_fracs = type_fracs
+        self.num_types = trans_tensor.shape[0]
         self.trans_tensor = trans_tensor
         self.reward_tensor = reward_tensor
         self.id2types = id2types.copy()
@@ -503,5 +460,63 @@ class IDPolicy(object):
 
         return actions, N_star
 
+
+class PriorityPolicy(object):
+    """
+    use it only for restless bandits
+    """
+    def __init__(self, sspa_size, num_types, priority_list, N, alpha):
+        self.sspa_size = sspa_size
+        self.sspa = np.array(list(range(self.sspa_size)))
+        self.num_types = num_types
+        self.priority_list = priority_list
+        self.alpha = alpha
+        self.N = N
+
+    def get_actions(self, id2types, cur_states):
+        """
+        :param cur_states: the current states of the arms
+        :return: the actions taken by the arms under the policy
+        """
+        # return actions from states
+        ts2indices = {}
+        # find out the arms whose (state, action) = sa_pair
+        for j in range(self.num_types):
+            for s in self.sspa:
+                ts2indices[(j,s)] = np.where(np.all([id2types==j,cur_states == s], axis=0))[0]
+
+        actions = np.zeros((self.N,), dtype=int)
+        rem_budget = round(self.N * self.alpha)
+        rem_budget += np.random.binomial(1, self.N * self.alpha - rem_budget)  # randomized rounding
+        # go from high priority to low priority
+        for ts_pair in self.priority_list:
+            num_arms_this_state = len(ts2indices[ts_pair])
+            if rem_budget >= num_arms_this_state:
+                actions[ts2indices[ts_pair]] = 1
+                rem_budget -= num_arms_this_state
+            else:
+                # break ties uniformly, sample without replacement
+                chosen_indices = np.random.choice(ts2indices[ts_pair], size=rem_budget, replace=False)
+                actions[chosen_indices] = 1
+                rem_budget = 0
+                break
+        assert rem_budget == 0, "something is wrong: priority policy should use up all the budget"
+        return actions
+
+    # def get_sa_pair_fracs(self, cur_state_fracs):
+    #     sa_pair_fracs = np.zeros((self.sspa_size, 2))
+    #     rem_budget_normalize = self.alpha
+    #     for state in self.priority_list:
+    #         frac_arms_this_state = cur_state_fracs[state]
+    #         if rem_budget_normalize >= frac_arms_this_state:
+    #             sa_pair_fracs[state, 1] = frac_arms_this_state
+    #             sa_pair_fracs[state, 0] = 0.0
+    #             rem_budget_normalize -= frac_arms_this_state
+    #         else:
+    #             sa_pair_fracs[state, 1] = rem_budget_normalize
+    #             sa_pair_fracs[state, 0] = frac_arms_this_state - rem_budget_normalize
+    #             rem_budget_normalize = 0
+    #     assert rem_budget_normalize == 0.0, "something is wrong, priority policy should use up all the budget"
+    #     return sa_pair_fracs
 
 
