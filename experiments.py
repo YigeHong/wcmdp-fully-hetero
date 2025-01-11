@@ -83,14 +83,15 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                                      trans_tensor=trans_tensor_N, reward_tensor=reward_tensor_N, K=K,
                                      cost_tensor_list=cost_tensor_list_N, alpha_list=alpha_list)
         opt_value, y = analyzer.solve_lp()
-        for j in range(num_types):
-            analyzer.print_LP_solution(j)
-        analyzer.print_LP_solution(-1)
+        # for j in range(num_types):
+        #     analyzer.print_LP_solution(j)
+        # analyzer.print_LP_solution(-1)
         toc_lp = time.time()
         print("Time for solving LP = {}, |S|={}, |A|={}, N={}, num_types={}".format(toc_lp-tic_lp, sspa_size, aspa_size, N, num_types))
         single_armed_policies = analyzer.policies
         upper_bound_dict[N] = opt_value
         print("Reward upper bound from LP = {}".format(opt_value))
+        # preprocessing steps for each policy
         if policy_name == "id":
             # if policy is id policy, reassign the ID, or obtain the existing reassigned order from the file
             if ("new_orders_dict" in setting_and_data) and (N in setting_and_data["new_orders_dict"]):
@@ -102,6 +103,18 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                 print("Time for reassign ID = {}".format(toc_reassign-tic_reassign))
             new_orders_dict[N] = new_orders
             print("new_orders= ", new_orders)
+        elif policy_name == "lpindex":
+            priority_list = analyzer.solve_LP_Priority()
+            fluid_active_type_state = []
+            for j in range(num_types):
+                for s in range(sspa_size):
+                    if (single_armed_policies[j,s,1] > 0.5) and  (single_armed_policies[j,s,0] <= 0.5):
+                        fluid_active_type_state.append((j,s))
+            print("fluid active (type, state)-pairs", fluid_active_type_state)
+            print("priority_list", priority_list)
+            assert set(priority_list[0:len(fluid_active_type_state)]) == set(fluid_active_type_state), "the priority list does not seem to prioritize fluid active states"
+        else:
+            raise NotImplementedError
         # simulation loops
         for rep in range(num_reps):
             full_reward_trace[(rep, N)] = []
@@ -137,6 +150,23 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                             t, recent_total_reward/save_mean_every/opt_value, recent_total_Nstar/save_mean_every/N))
                         recent_total_reward = 0
                         recent_total_Nstar = 0
+            elif policy_name == "lpindex":
+                # define the policy
+                policy = PriorityPolicy(sspa_size=sspa_size,num_types=num_types,priority_list=priority_list,N=N,alpha=alpha_list[0])
+                # start simulations loop
+                total_reward = 0
+                recent_total_reward = 0
+                for t in range(T):
+                    cur_states = wcmdp.get_states()
+                    actions = policy.get_actions(id2types=id2types_N, cur_states=cur_states)
+                    instant_reward = wcmdp.step(actions)
+                    total_reward += instant_reward
+                    recent_total_reward += instant_reward
+                    if (t+1)%save_mean_every == 0:
+                        full_reward_trace[(rep, N)].append(recent_total_reward / save_mean_every)
+                        print("t={}, recent_average_reward/upper_bound={}".format(
+                            t, recent_total_reward/save_mean_every/opt_value))
+                        recent_total_reward = 0
             else:
                 raise NotImplementedError
             avg_reward = total_reward / T
@@ -176,8 +206,8 @@ if __name__ == "__main__":
         os.mkdir("examples")
     if not os.path.exists("fig_data"):
         os.mkdir("fig_data")
-    for random_example_name in ["uniform-S10A4types5K4-0", "uniform-S10A4N1000K4fh-0"]: #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
+    for random_example_name in ["uniform-S10A2types5K1rb-0"]: #, "uniform-S10A4N1000K4fh-0"]: #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
         Ns = list(range(100, 1100, 100))
-        T = 5*10**4
-        run_policies(random_example_name, "id", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns, note="test3")
+        T = 10**4
+        run_policies(random_example_name, "lpindex", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns)
 

@@ -84,7 +84,7 @@ class RandomExampleFullyHet(object):
 
 
 class RandomExampleTypedHet(object):
-    def __init__(self, sspa_size, aspa_size, nominal_type_frac, K, distr, parameters):
+    def __init__(self, sspa_size, aspa_size, nominal_type_frac, K, distr, parameters, is_rb=False):
         """
         Generate a random wcmdp; the statistics of each arm is independently generated
         :param sspa_size: size of the state space
@@ -107,17 +107,25 @@ class RandomExampleTypedHet(object):
                 parameters = [parameters[0]] * self.sspa_size
             else:
                 parameters = parameters
-            self.trans_tensor = np.random.dirichlet(parameters, (self.num_types, sspa_size, aspa_size))
-            self.reward_tensor = np.random.uniform(0, 1, size=(self.num_types, sspa_size, aspa_size))
+            self.trans_tensor = np.random.dirichlet(parameters, (num_types, sspa_size, aspa_size))
+            self.reward_tensor = np.random.uniform(0, 1, size=(num_types, sspa_size, aspa_size))
             self.reward_tensor[:,:,0] = 0 # action 0 generates zero reward
             # truncate very small probabilities
             self.trans_tensor = clip_and_normalize(self.trans_tensor, 1e-7, axis=3)
-            self.cost_tensor_list = []
-            for k in range(K):
-                cost_tensor_k = np.random.uniform(0, 1, size=(self.num_types, sspa_size, aspa_size))
-                cost_tensor_k[:,:,0] = 0 # action 0 has zero cost
-                cost_tensor_k *= (cost_tensor_k >= 1e-7)
-                self.cost_tensor_list.append(cost_tensor_k)
+            if not is_rb:
+                self.cost_tensor_list = []
+                for k in range(K):
+                    cost_tensor_k = np.random.uniform(0, 1, size=(num_types, sspa_size, aspa_size))
+                    cost_tensor_k[:,:,0] = 0 # action 0 has zero cost
+                    cost_tensor_k *= (cost_tensor_k >= 1e-7)
+                    self.cost_tensor_list.append(cost_tensor_k)
+            else:
+                assert K == 1
+                assert aspa_size == 2
+                cost_tensor = np.zeros((num_types, sspa_size, aspa_size))
+                cost_tensor[:,:,1] = 1
+                self.cost_tensor_list = [cost_tensor]
+                print(self.cost_tensor_list)
         else:
             raise NotImplementedError
         # make sure alpha is not too close to 0 or 1; round to integer multiples of 20
@@ -133,17 +141,6 @@ class RandomExampleTypedHet(object):
         self.all_id2type = {}
 
     def get_actual_type_fracs(self, N):
-        # first compute the CDF of type distributions, rounded to integer multiples of N
-        # if N in self.type_cdfs_computed:
-        #     type_cdf_N = self.type_cdfs_computed[N]
-        # else:
-        #     type_cdf_N = np.zeros((self.num_types,))
-        #     type_cdf_N[0] = self.nominal_type_frac[0]
-        #     for type in range(1, self.num_types):
-        #         type_cdf_N[type] = type_cdf_N[type-1] + self.nominal_type_frac[type]
-        #     for type in range(self.num_types):
-        #         type_cdf_N[type] = round(N*type_cdf_N[type])/N  # rounding
-        #     self.type_cdfs_computed[N] = type_cdf_N
         actual_type_frac = np.zeros((self.num_types,))
         actual_type_frac[0] = round(self.nominal_type_cdf[0]*N)/N # round to integer multiples of N
         for t_ind in range(1, self.num_types):
@@ -200,17 +197,22 @@ def clip_and_normalize(tensor, epsilon, axis):
 if __name__ == "__main__":
     np.random.seed(42)
     sspa_size = 10
-    aspa_size = 4
+    aspa_size = 2
     # max_N = 1000
     num_types = 5
     nominal_type_frac = np.ones((num_types,), dtype=np.float64)/num_types
-    K = 4
+    K = 1
+    is_rb = True
     for ell in range(1):
         # example = RandomExampleFullyHet(sspa_size, aspa_size, max_N, K, "dirichlet", [1])
-        example = RandomExampleTypedHet(sspa_size, aspa_size, nominal_type_frac, K, "dirichlet", [1])
-        save_path = "examples/uniform-S{}A{}types{}K{}-{}".format(sspa_size, aspa_size, num_types, K, ell)
+        example = RandomExampleTypedHet(sspa_size, aspa_size, nominal_type_frac, K, "dirichlet", [1], is_rb=is_rb)
+        if not is_rb:
+            save_path = "examples/uniform-S{}A{}types{}K{}-{}".format(sspa_size, aspa_size, num_types, K, ell)
+        else:
+            save_path = "examples/uniform-S{}A{}types{}K{}rb-{}".format(sspa_size, aspa_size, num_types, K, ell)
         print("saving to: ", save_path)
         if os.path.exists(save_path):
+            print("file already exists, new example not saved")
             pass
         else:
             with open(save_path, "wb") as f:
