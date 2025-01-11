@@ -105,14 +105,26 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
             print("new_orders= ", new_orders)
         elif policy_name == "lpindex":
             priority_list = analyzer.solve_LP_Priority()
-            fluid_active_type_state = []
+            fluid_active_ts = []
+            fluid_neutral_ts = []
+            fluid_passive_ts = []
+            fluid_null_ts = []
             for j in range(num_types):
                 for s in range(sspa_size):
-                    if (single_armed_policies[j,s,1] > 0.5) and  (single_armed_policies[j,s,0] <= 0.5):
-                        fluid_active_type_state.append((j,s))
-            print("fluid active (type, state)-pairs", fluid_active_type_state)
+                    if (y[j,s,1] > 1e-4) and (y[j,s,0] <= 1e-4):
+                        fluid_active_ts.append((j,s))
+                    elif (y[j,s,1] > 1e-4) and (y[j,s,0] > 1e-4):
+                        fluid_neutral_ts.append((j,s))
+                    elif (y[j,s,1] <= 1e-4) and (y[j,s,0] > 1e-4):
+                        fluid_passive_ts.append((j,s))
+                    else:
+                        fluid_null_ts.append((j,s))
+            print("fluid active (type, state)-pairs", fluid_active_ts)
+            print("fluid neutral (type, state)-pairs", fluid_neutral_ts)
+            print("fluid passive (type, state)-pairs", fluid_passive_ts)
+            print("fluid null (type, state)-pairs", fluid_null_ts)
             print("priority_list", priority_list)
-            assert set(priority_list[0:len(fluid_active_type_state)]) == set(fluid_active_type_state), "the priority list does not seem to prioritize fluid active states"
+            assert set(priority_list[0:len(fluid_active_ts)]) == set(fluid_active_ts), "the priority list does not seem to prioritize fluid active states"
         else:
             raise NotImplementedError
         # simulation loops
@@ -206,7 +218,7 @@ if __name__ == "__main__":
         os.mkdir("examples")
     if not os.path.exists("fig_data"):
         os.mkdir("fig_data")
-    for random_example_name in ["uniform-S10A2types5K1rb-0"]: #, "uniform-S10A4N1000K4fh-0"]: #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
+    for random_example_name in ["uniform-S10A2types10K1rb-0"]: #, "uniform-S10A4N1000K4fh-0"]: #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
         Ns = list(range(100, 1100, 100))
         T = 10**4
         run_policies(random_example_name, "lpindex", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns)

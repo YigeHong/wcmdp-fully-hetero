@@ -199,7 +199,7 @@ if __name__ == "__main__":
     sspa_size = 10
     aspa_size = 2
     # max_N = 1000
-    num_types = 5
+    num_types = 10
     nominal_type_frac = np.ones((num_types,), dtype=np.float64)/num_types
     K = 1
     is_rb = True

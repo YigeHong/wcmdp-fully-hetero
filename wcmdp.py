@@ -243,7 +243,7 @@ class SingleArmAnalyzer(object):
         objective = self.get_objective()
         constrs = self.get_stationary_constraints() + self.get_budget_constraints() + self.get_basic_constraints()
         problem = cp.Problem(objective, constrs)
-        problem.solve(verbose=False)
+        problem.solve(verbose=True)
 
         # for ell in range(len(constrs)):
         #     print("The {}-th dual variable is {}".format(ell, constrs[ell].dual_value))
@@ -268,8 +268,8 @@ class SingleArmAnalyzer(object):
         for j in range(self.num_types):
             for cur_s in range(self.sspa_size):
                 for cur_a in range(self.aspa_size):
-                    self.q_func_relaxed[j, cur_s, cur_a] = self.reward_tensor[j, cur_s, cur_a] \
-                                                           + self.opt_subsidy * (cur_a==0) - self.avg_rewards[j] \
+                    self.q_func_relaxed[j, cur_s, cur_a] = self.reward_tensor[j, cur_s, cur_a]*self.type_fracs[j] \
+                                                           + self.opt_subsidy * (cur_a==0)*self.type_fracs[j] - self.avg_rewards[j] \
                                                            + np.sum(self.trans_tensor[j, cur_s, cur_a, :] * self.value_func_relaxed[j,:])
         if verbose:
             print("q func = ", self.q_func_relaxed)
@@ -282,6 +282,9 @@ class SingleArmAnalyzer(object):
                 action_gap = self.q_func_relaxed[j,cur_s,1] - self.q_func_relaxed[j,cur_s,0]
                 type_state_to_action_gap.append((j, cur_s, action_gap))
         type_state_to_action_gap.sort(key=lambda tp:tp[2], reverse=True) # sort by action gap in the descending order
+        logging.debug("Action gap, y value, gap from dual var of y>=0:")
+        for tp in type_state_to_action_gap:
+            logging.debug("({},{})".format(tp[0], tp[1]), tp[2], self.y.value[tp[0], tp[1],:], constrs[-2].dual_value[tp[0], tp[1], 0] - constrs[-2].dual_value[tp[0], tp[1], 1])
         priority_list = [(tp[0], tp[1]) for tp in type_state_to_action_gap]
         return priority_list
 
