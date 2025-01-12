@@ -52,13 +52,7 @@ class SingleArmAnalyzer(object):
         self.y = cp.Variable((self.num_types, self.sspa_size, self.aspa_size))
         # self.dualvars = cp.Parameter((K,), name="dualvar")  # the subsidy parameter for solving Whittle's index policy
 
-        # store some data of the solution, only needed for solving the LP-Priority policy
-        # the values might change, so they are not safe to use unless immediately after solving the LP.
         self.opt_value = None
-        # self.avg_rewards = np.zeros((self.num_types,))
-        # self.opt_subsidy = None
-        # self.value_func_relaxed = np.zeros((self.num_types, self.sspa_size,))
-        # self.q_func_relaxed = np.zeros((self.num_types, self.sspa_size, self.aspa_size))
 
         self.state_probs = None  # optimal state frequency for each arm, ndarray, dims=(N, sspa), dtype=float
         self.policies = None  # optimal single-armed policies for each arm, ndarray, dims=(N, sspa, aspa), dtype=float
@@ -470,13 +464,15 @@ class PriorityPolicy(object):
     """
     use it only for restless bandits
     """
-    def __init__(self, sspa_size, num_types, priority_list, N, alpha):
+    def __init__(self, sspa_size, num_types, N, alpha, priority_list, never_act_list):
         self.sspa_size = sspa_size
         self.sspa = np.array(list(range(self.sspa_size)))
         self.num_types = num_types
-        self.priority_list = priority_list
         self.alpha = alpha
         self.N = N
+        self.priority_list = priority_list
+        # we never activate null states; when the budget are not tight, we never activate fluid passive states
+        self.never_act_list = never_act_list
 
     def get_actions(self, id2types, cur_states):
         """
@@ -495,6 +491,8 @@ class PriorityPolicy(object):
         rem_budget += np.random.binomial(1, self.N * self.alpha - rem_budget)  # randomized rounding
         # go from high priority to low priority
         for ts_pair in self.priority_list:
+            if ts_pair in self.never_act_list:
+                continue
             num_arms_this_state = len(ts2indices[ts_pair])
             if rem_budget >= num_arms_this_state:
                 actions[ts2indices[ts_pair]] = 1
@@ -505,7 +503,7 @@ class PriorityPolicy(object):
                 actions[chosen_indices] = 1
                 rem_budget = 0
                 break
-        assert rem_budget == 0, "something is wrong: priority policy should use up all the budget"
+        # assert rem_budget == 0, "something is wrong: priority policy should use up all the budget when binding"
         return actions
 
     # def get_sa_pair_fracs(self, cur_state_fracs):

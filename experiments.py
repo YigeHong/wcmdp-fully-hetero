@@ -138,7 +138,18 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                     priority_list.remove(null_state)
                     priority_list.append(null_state)
 
-            assert set(priority_list[0:len(fluid_active_ts)]) == set(fluid_active_ts), "the priority list does not seem to prioritize fluid active states"
+            # check if the priority list is consistent with the requirement
+            assert set(priority_list[0:len(fluid_active_ts)]) == set(fluid_active_ts), "the priority list does not seem " \
+                                                                                       "to prioritize fluid active states"
+            assert set(priority_list[0:(len(fluid_active_ts)+len(fluid_neutral_ts))]) == set(fluid_active_ts+fluid_neutral_ts), \
+                "the priority list does not seem to prioritize fluid neutral states over passive"
+
+            if np.sum(y[:,:,1]) < alpha_list[0]: # in the optimal LP solution, the budget constraint is non-binding
+                print("the budget constraint is non-binding, so fluid passive states won't be activated")
+                never_act_list = fluid_passive_ts + fluid_null_ts
+            else: # if the budget constraint is binding
+                print("the budget constraint is binding, so fluid passive states will be activated if possible")
+                never_act_list = fluid_null_ts
         else:
             raise NotImplementedError
         # simulation loops
@@ -178,7 +189,8 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
                         recent_total_Nstar = 0
             elif policy_name == "lpindex":
                 # define the policy
-                policy = PriorityPolicy(sspa_size=sspa_size,num_types=num_types,priority_list=priority_list,N=N,alpha=alpha_list[0])
+                policy = PriorityPolicy(sspa_size=sspa_size,num_types=num_types, N=N, alpha=alpha_list[0],
+                                        priority_list=priority_list, never_act_list=never_act_list)
                 # start simulations loop
                 total_reward = 0
                 recent_total_reward = 0
@@ -242,7 +254,7 @@ if __name__ == "__main__":
         os.mkdir("examples")
     if not os.path.exists("fig_data"):
         os.mkdir("fig_data")
-    for random_example_name in ["uniform-S10A2types1000K1rb-0"]: #, "uniform-S10A4N1000K4fh-0"]: #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
+    for random_example_name in ["uniform-S10A2types10K1rb-0"]: #, "uniform-S10A4N1000K4fh-0"]: #"uniform-S10A4N1000K4fh-0" # "uniform-S5A3N200K3fh-0"
         Ns = list(range(2000, 4000, 1000))
         T = 10**4
         run_policies(random_example_name, "lpindex", "random", T=T, setting_path="examples/"+random_example_name, Ns=Ns)
