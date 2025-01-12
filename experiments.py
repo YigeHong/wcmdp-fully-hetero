@@ -132,6 +132,12 @@ def run_policies(setting_name, policy_name, init_method, T, setting_path=None, N
             print_limited_list("fluid null (type, state)-pairs", fluid_null_ts)
             print_limited_list("priority_list", priority_list)
 
+            ## move null states to the end of the priority list
+            for null_state in fluid_null_ts: 
+                if null_state in priority_list:
+                    priority_list.remove(null_state)
+                    priority_list.append(null_state)
+
             assert set(priority_list[0:len(fluid_active_ts)]) == set(fluid_active_ts), "the priority list does not seem to prioritize fluid active states"
         else:
             raise NotImplementedError
