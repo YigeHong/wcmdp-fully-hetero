@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 examples/
 *.png
+fig_data/
+*.log

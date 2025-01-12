@@ -286,7 +286,7 @@ class SingleArmAnalyzer(object):
         type_state_to_action_gap.sort(key=lambda tp:tp[2], reverse=True) # sort by action gap in the descending order
         logging.debug("y value, action gap computed from dual var of y>=0:")
         for tp in type_state_to_action_gap:
-            logging.debug("({},{})".format(tp[0], tp[1]), tp[2], self.y.value[tp[0], tp[1],:])
+            logging.debug("({}, {}) {} {}".format(tp[0], tp[1], tp[2], self.y.value[tp[0], tp[1],:]))
         priority_list = [(tp[0], tp[1]) for tp in type_state_to_action_gap]
         return priority_list
 

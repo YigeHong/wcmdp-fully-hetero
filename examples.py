@@ -129,7 +129,7 @@ class RandomExampleTypedHet(object):
         else:
             raise NotImplementedError
         # make sure alpha is not too close to 0 or 1; round to integer multiples of 20
-        raw_alphas = np.random.uniform(0.1,0.9, size=K)
+        raw_alphas = np.random.uniform(0.1,0.3, size=K)
         self.alpha_list = [round(20*alpha)/20 for alpha in raw_alphas]
 
         # the CDF of the arms' nominal type distribution
@@ -177,8 +177,8 @@ class RandomExampleTypedHet(object):
                                                            np.min(np.array(self.alpha_list))))
         print("alpha list:")
         print(self.alpha_list)
-        print("nominal type fractions:")
-        print(self.nominal_type_frac)
+        # print("nominal type fractions:")
+        # print(self.nominal_type_frac)
         if verbose:
             print("reward tensor:")
             print(self.reward_tensor)
@@ -199,13 +199,13 @@ if __name__ == "__main__":
     sspa_size = 10
     aspa_size = 2
     # max_N = 1000
-    num_types = 10
+    num_types = 1000
     nominal_type_frac = np.ones((num_types,), dtype=np.float64)/num_types
     K = 1
     is_rb = True
     for ell in range(1):
         # example = RandomExampleFullyHet(sspa_size, aspa_size, max_N, K, "dirichlet", [1])
-        example = RandomExampleTypedHet(sspa_size, aspa_size, nominal_type_frac, K, "dirichlet", [1], is_rb=is_rb)
+        example = RandomExampleTypedHet(sspa_size, aspa_size, nominal_type_frac, K, "dirichlet", [0.1], is_rb=is_rb)
         if not is_rb:
             save_path = "examples/uniform-S{}A{}types{}K{}-{}".format(sspa_size, aspa_size, num_types, K, ell)
         else:
